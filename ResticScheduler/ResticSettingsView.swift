@@ -73,7 +73,9 @@ struct ResticSettingsView: View {
                     if repositoryType.wrappedValue == .local {
                         HStack {
                             Image(nsImage: image)
-                            Text(FileManager.default.displayName(atPath: repository))
+                            Text(repository)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
                         }
                         .tag(RepositoryType.local)
                         Divider()

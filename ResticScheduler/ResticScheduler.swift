@@ -98,6 +98,9 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
         guard interval.components.seconds > 0 else {
             return false
         }
+        if let nextScheduledBackupDate, nextScheduledBackupDate > Date() {
+            return false
+        }
 
         return lastSuccessfulBackupDate == nil || abs(lastSuccessfulBackupDate!.timeIntervalSinceNow) >= TimeInterval(interval.components.seconds * 2)
     }

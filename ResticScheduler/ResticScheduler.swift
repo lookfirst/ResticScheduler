@@ -327,7 +327,13 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
     private func scheduledBackup() {
         lock.withLock {
             guard status == .idle else {
-                TypeLogger.function().info("Skipped scheduled backup because another backup is in progress")
+                nextScheduledBackupDate = nextBackupDate(from: Date())
+                if let nextScheduledBackupDate {
+                    backupTimer?.fireDate = nextScheduledBackupDate
+                    TypeLogger.function().info("Skipped scheduled backup because another backup is in progress, next backup: \(nextScheduledBackupDate, privacy: .public)")
+                } else {
+                    TypeLogger.function().info("Skipped scheduled backup because another backup is in progress")
+                }
                 return
             }
         }

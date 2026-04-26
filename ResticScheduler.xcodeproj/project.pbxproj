@@ -452,7 +452,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -eu\n\nINFO_PLIST=\"${TARGET_BUILD_DIR}/${INFOPLIST_PATH}\"\nBUNDLE_VERSION=\"$(git rev-list --all --count)\"\n\necho \"BUNDLE_VERSION: $BUNDLE_VERSION\"\n\n/usr/libexec/PlistBuddy -c \"Set :CFBundleVersion $BUNDLE_VERSION\" \"$INFO_PLIST\"\n";
+			shellScript = "set -eu\n\nINFO_PLIST=\"${TARGET_BUILD_DIR}/${INFOPLIST_PATH}\"\nBUNDLE_VERSION=\"$(git rev-list --all --count)\"\n\necho \"BUNDLE_VERSION: $BUNDLE_VERSION\"\n\n/usr/libexec/PlistBuddy -c \"Set :CFBundleVersion $BUNDLE_VERSION\" \"$INFO_PLIST\"\n\nRESTIC_BINARY=\"${CODESIGNING_FOLDER_PATH}/Contents/Resources/restic\"\nif [ -f \"$RESTIC_BINARY\" ] && [ \"${CODE_SIGNING_ALLOWED:-NO}\" = \"YES\" ] && [ -n \"${EXPANDED_CODE_SIGN_IDENTITY:-}\" ]; then\n    /usr/bin/codesign --force --sign \"$EXPANDED_CODE_SIGN_IDENTITY\" --timestamp=none \"$RESTIC_BINARY\"\nfi\n";
 		};
 		4BDF2B04298DA2EE00B413CA /* ShellScript */ = {
 			isa = PBXShellScriptBuildPhase;

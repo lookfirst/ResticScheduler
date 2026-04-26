@@ -88,7 +88,7 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
 
     private let runner = Runner()
     private let lock = OSAllocatedUnfairLock()
-    private var backupScheduler: NSBackgroundActivityScheduler?
+    private var backupTimer: Timer?
     private var staleBackupScheduler: NSBackgroundActivityScheduler?
     private var bag = Set<AnyCancellable>()
 
@@ -126,6 +126,7 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
     func backup(completion: @escaping ((Error?) -> Void)) {
         lock.withLock {
             guard status == .idle else {
+                completion(status == .preparation ? BackupError.preparationInProcess : BackupError.backupInProcess)
                 return
             }
 
@@ -227,39 +228,41 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
 
     func rescheduleBackup() {
         lock.withLock {
-            backupScheduler?.invalidate()
+            backupTimer?.invalidate()
+            backupTimer = nil
             let interval = Duration.seconds(backupFrequency)
             guard interval.components.seconds > 0 else {
                 return
             }
 
-            backupScheduler = NSBackgroundActivityScheduler(identifier: "\(Bundle.main.bundleIdentifier!).backup")
-            backupScheduler!.qualityOfService = .background
-            backupScheduler!.interval = TimeInterval(interval.components.seconds)
-            backupScheduler!.repeats = true
-            backupScheduler!.schedule { [weak self] completion in
-                guard let self, let backupScheduler else {
-                    completion(.deferred)
+            let timer = Timer(timeInterval: TimeInterval(interval.components.seconds), repeats: true) { [weak self] _ in
+                self?.scheduledBackup()
+            }
+            backupTimer = timer
+            DispatchQueue.main.async {
+                guard timer.isValid else {
                     return
                 }
-                guard !backupScheduler.shouldDefer else {
-                    TypeLogger.function().info("Deferred backup as suggested")
-                    completion(.deferred)
-                    return
-                }
-
-                DispatchQueue.main.sync {
-                    self.backup { error in
-                        if let error {
-                            TypeLogger.function().error("Failed to run scheduled backup: \(error.localizedDescription, privacy: .public)")
-                        } else {
-                            TypeLogger.function().info("Finished scheduled backup")
-                        }
-                        completion(.finished)
-                    }
-                }
+                RunLoop.main.add(timer, forMode: .common)
             }
             TypeLogger.function().info("Rescheduled backups, interval: \(interval.formatted(.units(allowed: [.days, .hours, .minutes, .seconds], width: .wide)), privacy: .public)")
+        }
+    }
+
+    private func scheduledBackup() {
+        lock.withLock {
+            guard status == .idle else {
+                TypeLogger.function().info("Skipped scheduled backup because another backup is in progress")
+                return
+            }
+        }
+
+        backup { error in
+            if let error {
+                TypeLogger.function().error("Failed to run scheduled backup: \(error.localizedDescription, privacy: .public)")
+            } else {
+                TypeLogger.function().info("Finished scheduled backup")
+            }
         }
     }
 

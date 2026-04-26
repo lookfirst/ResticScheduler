@@ -1,3 +1,10 @@
 /Config.xcconfig
 /restic
 xcuserdata
+.idea
+Logs
+build
+Restic Scheduler.app
+SourcePackages
+.DS_Store
+info.plist

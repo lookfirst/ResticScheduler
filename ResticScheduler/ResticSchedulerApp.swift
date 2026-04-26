@@ -48,6 +48,9 @@ import SwiftUI
                 Text("Preparing to back up…")
             case .backup:
                 Text("\(resticScheduler.percentDone.formatted(.percent)) done – \(resticScheduler.bytesDone.formatted(.byteCount(style: .file))) copied")
+            case .finishing:
+                Text("Finishing backup…")
+                Text("\(resticScheduler.bytesDone.formatted(.byteCount(style: .file))) copied")
             default:
                 if lastSuccessfulBackupDate != nil {
                     Text("Latest Backup to “\(formatRepository(repository))”")

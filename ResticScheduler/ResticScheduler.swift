@@ -6,7 +6,7 @@ import UserNotifications
 
 class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
     enum Status {
-        case idle, preparation, backup, stopping
+        case idle, preparation, backup, finishing, stopping
     }
 
     private class Runner: ResticRunnerProtocol {
@@ -123,6 +123,9 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
                 }
                 self.percentDone = percentDone
                 self.bytesDone = bytesDone
+                if percentDone >= 1, status == .backup {
+                    status = .finishing
+                }
             }
         }
     }

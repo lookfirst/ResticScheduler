@@ -8,6 +8,7 @@ import SwiftUI
     @NSApplicationDelegateAdaptor private var appDelegate: AppDelegate
     @StateObject private var resticScheduler = ResticScheduler()
     @UserDefault(\.repository) private var repository
+    @UserDefault(\.backupFrequency) private var backupFrequency
     @UserDefault(\.lastSuccessfulBackupDate) private var lastSuccessfulBackupDate
     @UserDefault(\.localizedError) private var localizedError
 
@@ -20,11 +21,23 @@ import SwiftUI
     }
 
     private var lastSuccessfulBackup: String {
+        formatBackupDate(lastSuccessfulBackupDate!)
+    }
+
+    private var nextBackup: String? {
+        guard backupFrequency > 0, let lastSuccessfulBackupDate else {
+            return nil
+        }
+
+        return formatBackupDate(lastSuccessfulBackupDate.addingTimeInterval(TimeInterval(backupFrequency)))
+    }
+
+    private func formatBackupDate(_ date: Date) -> String {
         let relativeDateFormatter = DateFormatter()
         relativeDateFormatter.timeStyle = .short
         relativeDateFormatter.dateStyle = .short
         relativeDateFormatter.doesRelativeDateFormatting = true
-        return relativeDateFormatter.string(from: lastSuccessfulBackupDate!)
+        return relativeDateFormatter.string(from: date)
     }
 
     var body: some Scene {
@@ -38,6 +51,10 @@ import SwiftUI
                 if lastSuccessfulBackupDate != nil {
                     Text("Latest Backup to “\(formatRepository(repository))”")
                     Text(lastSuccessfulBackup)
+                    if let nextBackup {
+                        Text("Next Backup")
+                        Text(nextBackup)
+                    }
                     if localizedError != nil {
                         Button("Backup Failed…", action: showError)
                     }

@@ -1,3 +1,4 @@
+import AppKit
 import ResticSchedulerKit
 import ServiceManagement
 import SwiftUI
@@ -15,27 +16,72 @@ struct GeneralSettingsView: View {
     private typealias TypeLogger = ResticSchedulerKit.TypeLogger<GeneralSettingsView>
 
     @State private var customizeFrequency = false
+    @State private var launchAtLogin = false
+    @State private var isUpdatingLaunchAtLogin = false
     @EnvironmentObject private var resticScheduler: ResticScheduler
     @UserDefault(\.backupFrequency) private var backupFrequency
+
+    private static func isLaunchAtLoginEnabled(_ status: SMAppService.Status) -> Bool {
+        switch status {
+        case .enabled, .requiresApproval:
+            true
+        default:
+            false
+        }
+    }
+
+    private func refreshLaunchAtLogin() {
+        launchAtLogin = Self.isLaunchAtLoginEnabled(SMAppService.mainApp.status)
+    }
+
+    @MainActor
+    private func setLaunchAtLogin(_ newValue: Bool) async {
+        let previousValue = launchAtLogin
+        launchAtLogin = newValue
+        isUpdatingLaunchAtLogin = true
+        defer { isUpdatingLaunchAtLogin = false }
+
+        do {
+            let service = SMAppService.mainApp
+            let status = service.status
+
+            if newValue {
+                if !Self.isLaunchAtLoginEnabled(status) {
+                    try service.register()
+                }
+            } else if Self.isLaunchAtLoginEnabled(status) {
+                try await service.unregister()
+            }
+
+            refreshLaunchAtLogin()
+            try? await Task.sleep(for: .milliseconds(300))
+            refreshLaunchAtLogin()
+        } catch {
+            launchAtLogin = previousValue
+            TypeLogger.function().error("\(error.localizedDescription, privacy: .public)")
+
+            let alert = NSAlert()
+            alert.messageText = "Restic Scheduler couldn't change the launch at login setting."
+            alert.informativeText = error.localizedDescription
+            alert.alertStyle = .critical
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+        }
+    }
 
     var body: some View {
         VStack {
             Form {
-                let launchAtLogin = Binding<Bool> {
-                    SMAppService.mainApp.status == .enabled
+                let launchAtLoginBinding = Binding<Bool> {
+                    launchAtLogin
                 } set: { newValue in
-                    do {
-                        if newValue, SMAppService.mainApp.status != .enabled {
-                            try SMAppService.mainApp.register()
-                        } else if !newValue, SMAppService.mainApp.status == .enabled {
-                            try SMAppService.mainApp.unregister()
-                        }
-                    } catch {
-                        TypeLogger.function().error("\(error.localizedDescription, privacy: .public)")
+                    Task {
+                        await setLaunchAtLogin(newValue)
                     }
                 }
 
-                Toggle("Launch at login", isOn: launchAtLogin)
+                Toggle("Launch at login", isOn: launchAtLoginBinding)
+                    .allowsHitTesting(!isUpdatingLaunchAtLogin)
                     .padding(.bottom, 10)
 
                 let backupFrequencyType = Binding<BackupFrequencyType> {
@@ -84,6 +130,7 @@ struct GeneralSettingsView: View {
             .frame(width: 400, alignment: .center)
             .padding()
         }
+        .onAppear(perform: refreshLaunchAtLogin)
         .onChange(of: backupFrequency) { _ in
             resticScheduler.backupFrequencyDidChange()
         }

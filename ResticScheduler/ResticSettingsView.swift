@@ -26,6 +26,7 @@ struct ResticSettingsView: View {
     @KeychainPassword(\.password) private var password
     @UserDefault(\.includes) private var includes
     @UserDefault(\.excludes) private var excludes
+    @UserDefault(\.intelligentMacOSBackupEnabled) private var intelligentMacOSBackupEnabled
     @UserDefault(\.s3AccessKeyId) private var s3AccessKeyId
     @KeychainPassword(\.s3SecretAccessKey) private var s3SecretAccessKey
     @UserDefault(\.restUsername) private var restUsername
@@ -76,7 +77,7 @@ struct ResticSettingsView: View {
                             Text(FileManager.default.displayName(atPath: repository))
                                 .lineLimit(1)
                                 .truncationMode(.middle)
-                                .frame(maxWidth: 240, alignment: .leading)
+                                .frame(maxWidth: .infinity, alignment: .leading)
                         }
                         .tag(RepositoryType.local)
                         Divider()
@@ -130,11 +131,25 @@ struct ResticSettingsView: View {
                     Spacer(minLength: 18)
                 }
                 SecureField("Password:", text: $password)
+                Divider()
+                    .padding(.vertical, 8)
                 EditableList("Included files:", values: $includes)
+                LabeledContent {
+                    Toggle("Don't back up cache and temporary files", isOn: $intelligentMacOSBackupEnabled)
+                        .toggleStyle(.checkbox)
+                        .fixedSize()
+                        .transaction { transaction in
+                            transaction.animation = nil
+                        }
+                } label: {
+                    Text("Standard excludes:")
+                }
+                .help("Skip generated caches, logs, build products, installers, and other cleanup-safe files. Home Library recommendations are added only when an included path is inside your home folder.")
                 EditableList("Excluded files:", values: $excludes)
             }
             .animation(.default, value: repository)
-            .frame(width: 400, alignment: .center)
+            .animation(nil, value: intelligentMacOSBackupEnabled)
+            .frame(minWidth: 400, maxWidth: .infinity, alignment: .center)
             .padding()
         }
         .onChange(of: repository) { _ in
@@ -144,6 +159,7 @@ struct ResticSettingsView: View {
         }
         .onChange(of: [
             password,
+            intelligentMacOSBackupEnabled,
             includes,
             excludes,
             s3AccessKeyId,

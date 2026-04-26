@@ -132,6 +132,14 @@ class ResticRunnerService: ResticRunnerProtocol {
         do {
             try FileManager.default.createDirectory(at: options.logURL.deletingLastPathComponent(), withIntermediateDirectories: true)
             try "\(Date().formatted(.rfc3164)) Starting backup...\n".append(to: options.logURL, encoding: .utf8)
+            try "\(Self.logPadding)includes:\n".append(to: options.logURL, encoding: .utf8)
+            for include in options.includes {
+                try "\(Self.logPadding)  \(include)\n".append(to: options.logURL, encoding: .utf8)
+            }
+            try "\(Self.logPadding)excludes:\n".append(to: options.logURL, encoding: .utf8)
+            for exclude in options.excludes {
+                try "\(Self.logPadding)  \(exclude)\n".append(to: options.logURL, encoding: .utf8)
+            }
             if let beforeBackup = options.beforeBackup {
                 runHook(beforeBackup, ofType: .beforeBackup, loggingTo: options.logURL)
             }

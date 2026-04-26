@@ -29,6 +29,9 @@ extension UserDefaultValues {
     @UserDefaultEntry("ResticExcludes")
     var excludes: [String] = []
 
+    @UserDefaultEntry("IntelligentMacOSBackupEnabled")
+    var intelligentMacOSBackupEnabled: Bool = false
+
     @UserDefaultEntry("LastSuccessfulBackupDate")
     var lastSuccessfulBackupDate: Date? = nil
 

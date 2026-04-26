@@ -249,6 +249,7 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
             "\(homeDirectory)/Library/Containers/*/Data/Library/Saved Application State",
             "\(homeDirectory)/Library/Containers/*/Data/tmp",
             "\(homeDirectory)/Library/Containers/com.apple.AddressBook*",
+            "\(homeDirectory)/Library/Containers/com.apple.AMPArtworkAgent*",
             "\(homeDirectory)/Library/Containers/com.apple.BKAgentService*",
             "\(homeDirectory)/Library/Containers/com.apple.BKLibraryService*",
             "\(homeDirectory)/Library/Containers/com.apple.Books*",

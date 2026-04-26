@@ -264,6 +264,7 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
             "\(homeDirectory)/Library/Containers/com.apple.MobileSMS*",
             "\(homeDirectory)/Library/Containers/com.apple.Maps*",
             "\(homeDirectory)/Library/Containers/com.apple.Notes*",
+            "\(homeDirectory)/Library/Containers/com.apple.Photos.PhotosReliveWidget*",
             "\(homeDirectory)/Library/Containers/com.apple.Reminders*",
             "\(homeDirectory)/Library/Containers/com.apple.Safari*",
             "\(homeDirectory)/Library/Containers/com.apple.VoiceMemos*",

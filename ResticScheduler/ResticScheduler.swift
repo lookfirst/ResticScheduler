@@ -99,7 +99,6 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
             "\(homeDirectory)/.yarn/berry/cache",
             "\(homeDirectory)/.yarn/cache",
             "\(homeDirectory)/.local/share/pnpm/store",
-            "\(homeDirectory)/go/pkg/mod",
             "\(homeDirectory)/Library/Android/sdk",
             "\(homeDirectory)/Library/CloudStorage",
             "\(homeDirectory)/Library/Application Support/MobileSync/Backup",
@@ -348,7 +347,97 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
             "\(homeDirectory)/Documents/*.mpkg",
             "\(homeDirectory)/Documents/*.pkg",
             "\(homeDirectory)/Documents/*.xip",
-        ]
+        ].appendingUnique(Self.goCacheExcludes(for: homeDirectory))
+    }
+
+    private static func goCacheExcludes(for homeDirectory: String) -> [String] {
+        let goEnvironment = goEnvironment(for: homeDirectory)
+        let goPaths = pathList(from: goEnvironment["GOPATH"], homeDirectory: homeDirectory)
+        let goModuleCaches = pathList(from: goEnvironment["GOMODCACHE"], homeDirectory: homeDirectory)
+        let goBuildCaches = pathList(from: goEnvironment["GOCACHE"], homeDirectory: homeDirectory)
+
+        var excludes = goModuleCaches
+        for goPath in goPaths {
+            excludes.append("\(goPath)/pkg/mod")
+            excludes.append("\(goPath)/pkg/sumdb")
+        }
+        excludes.append(contentsOf: goBuildCaches)
+        return excludes
+            .filter { path($0, isInside: homeDirectory) }
+            .appendingUnique([])
+    }
+
+    private static func goEnvironment(for homeDirectory: String) -> [String: String] {
+        let environment = ProcessInfo.processInfo.environment
+        var values = ["GOPATH": "\(homeDirectory)/go"]
+        for key in ["GOPATH", "GOMODCACHE", "GOCACHE"] where environment[key]?.isEmpty == false {
+            values[key] = environment[key]
+        }
+
+        guard let output = runGoEnv(for: homeDirectory) else {
+            return values
+        }
+
+        let keys = ["GOPATH", "GOMODCACHE", "GOCACHE"]
+        for (key, value) in zip(keys, output.split(separator: "\n", omittingEmptySubsequences: false)) where !value.isEmpty {
+            values[key] = String(value)
+        }
+        return values
+    }
+
+    private static func runGoEnv(for homeDirectory: String) -> String? {
+        do {
+            let process = Process()
+            process.qualityOfService = .utility
+            process.executableURL = URL(filePath: "/usr/bin/env")
+            process.arguments = ["go", "env", "GOPATH", "GOMODCACHE", "GOCACHE"]
+            process.environment = ProcessInfo.processInfo.environment.merging([
+                "HOME": homeDirectory,
+                "PATH": "/opt/homebrew/bin:/usr/local/bin:/opt/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+            ]) { _, new in new }
+
+            let outputPipe = Pipe()
+            process.standardOutput = outputPipe
+            process.standardError = Pipe()
+            try process.run()
+            process.waitUntilExit()
+
+            guard process.terminationStatus == 0 else {
+                return nil
+            }
+            return String(decoding: outputPipe.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        } catch {
+            return nil
+        }
+    }
+
+    private static func pathList(from value: String?, homeDirectory: String) -> [String] {
+        guard let value, !value.isEmpty else {
+            return []
+        }
+
+        return value
+            .split(separator: ":", omittingEmptySubsequences: true)
+            .compactMap { normalizedPath(String($0), homeDirectory: homeDirectory) }
+            .appendingUnique([])
+    }
+
+    private static func normalizedPath(_ path: String, homeDirectory: String) -> String? {
+        guard !path.isEmpty else {
+            return nil
+        }
+
+        return path
+            .replacingOccurrences(of: "$HOME", with: homeDirectory)
+            .replacingOccurrences(of: "${HOME}", with: homeDirectory)
+            .replacingOccurrences(of: "~", with: homeDirectory, options: [.anchored])
+            .deletingTrailingSlashes
+    }
+
+    private static func path(_ path: String, isInside directory: String) -> Bool {
+        let path = path.deletingTrailingSlashes
+        let directory = directory.deletingTrailingSlashes
+        return path == directory || path.hasPrefix("\(directory)/")
     }
 
     var logURL: URL {

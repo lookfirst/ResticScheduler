@@ -121,6 +121,7 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
             "\(homeDirectory)/Library/Application Support/Mimestream",
             "\(homeDirectory)/Library/Application Support/UnrealEngine/Common/DerivedDataCache",
             "\(homeDirectory)/Library/Application Support/google-cloud-tools-java/managed-cloud-sdk",
+            "\(homeDirectory)/Library/Application Support/virtualenv",
             "\(homeDirectory)/Library/Application Scripts/com.apple.*Diagnostic*",
             "\(homeDirectory)/Library/Application Scripts/com.apple.*Telemetry*",
             "\(homeDirectory)/Library/Application Scripts/com.apple.DiagnosticExtensions.*",

@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import SwiftUI
 
@@ -61,10 +62,35 @@ extension NSAlert {
         let alert = NSAlert()
         alert.messageText = messageText.description
         if !informativeText.isEmpty {
-            alert.informativeText = informativeText
+            switch messageText {
+            case .backupFailure:
+                alert.accessoryView = scrollableTextView(for: informativeText)
+            default:
+                alert.informativeText = informativeText
+            }
         }
         alert.alertStyle = .critical
         alert.addButton(withTitle: "OK")
         alert.runModal()
+    }
+
+    private static func scrollableTextView(for text: String) -> NSScrollView {
+        let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 520, height: 220))
+        scrollView.hasVerticalScroller = true
+        scrollView.hasHorizontalScroller = false
+        scrollView.borderType = .bezelBorder
+
+        let textView = NSTextView(frame: scrollView.bounds)
+        textView.string = text
+        textView.isEditable = false
+        textView.isSelectable = true
+        textView.drawsBackground = false
+        textView.textContainerInset = NSSize(width: 6, height: 6)
+        textView.textContainer?.containerSize = NSSize(width: scrollView.contentSize.width, height: .greatestFiniteMagnitude)
+        textView.textContainer?.widthTracksTextView = true
+        textView.autoresizingMask = [.width]
+
+        scrollView.documentView = textView
+        return scrollView
     }
 }

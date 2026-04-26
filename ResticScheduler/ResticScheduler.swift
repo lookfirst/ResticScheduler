@@ -58,6 +58,7 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
         "*.cache-*",
         ".dart_tool",
         "*.qcow2",
+        "*.qcow2.xz",
         "**/.gradle/caches",
         "**/.next/cache",
         ".parcel-cache",

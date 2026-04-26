@@ -72,7 +72,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         }
     }
 
-    func addNotification(content: UNNotificationContent) {
+    func addNotification(content: UNMutableNotificationContent) {
+        content.sound = .default
+        content.interruptionLevel = .timeSensitive
+
         notificationCenter!.requestAuthorization(options: Self.authorizationOptions) { granted, error in
             guard error == nil else {
                 TypeLogger.function().warning("Notification authorization request error: \(error!.localizedDescription, privacy: .public)")

@@ -138,6 +138,11 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
             }
 
             status = .preparation
+            let startedContent = UNMutableNotificationContent()
+            startedContent.title = "Backup Started"
+            startedContent.body = "Restic Scheduler started backing up “\(formatRepository(repository))”."
+            AppDelegate.shared?.addNotification(content: startedContent)
+
             var environment = [
                 "RESTIC_REPOSITORY": repository,
                 "RESTIC_PASSWORD": password,
@@ -191,6 +196,10 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
                             let completedAt = Date()
                             lastSuccessfulBackupDate = completedAt
                             nextScheduledBackupDate = nextBackupDate(from: completedAt)
+                            let content = UNMutableNotificationContent()
+                            content.title = "Backup Completed"
+                            content.body = "Restic Scheduler finished backing up “\(formatRepository(repository))”."
+                            AppDelegate.shared?.addNotification(content: content)
                         }
                         status = .idle
                         completion(error)
@@ -277,7 +286,7 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
             return nil
         }
 
-        return date.addingTimeInterval(TimeInterval(interval.components.seconds))
+        return date.addingTimeInterval(TimeInterval(interval.components.seconds)).roundedUpToMinute()
     }
 
     private func scheduledBackup() {
@@ -337,5 +346,16 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
             }
             TypeLogger.function().info("Rescheduled stale backup check, interval: \(Duration.seconds(staleCheckInterval).formatted(.units(allowed: [.days, .hours, .minutes, .seconds], width: .wide)), privacy: .public), stale: \(self.isBackupStale, privacy: .public)")
         }
+    }
+}
+
+private extension Date {
+    func roundedUpToMinute(calendar: Calendar = .current) -> Date {
+        let components = calendar.dateComponents([.nanosecond, .second], from: self)
+        guard components.second != 0 || components.nanosecond != 0 else {
+            return self
+        }
+
+        return calendar.nextDate(after: self, matching: DateComponents(second: 0, nanosecond: 0), matchingPolicy: .nextTime)!
     }
 }

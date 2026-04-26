@@ -113,6 +113,7 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
             "\(homeDirectory)/Library/Application Support/CloudDocs",
             "\(homeDirectory)/Library/Application Support/FileProvider",
             "\(homeDirectory)/Library/Application Support/Books",
+            "\(homeDirectory)/Library/Application Support/com.docker.install",
             "\(homeDirectory)/Library/Application Support/com.apple.wallpaper",
             "\(homeDirectory)/Library/Application Support/com.apple.wallpaper.*",
             "\(homeDirectory)/Library/Application Support/Google/AndroidStudio*/plugins",

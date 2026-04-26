@@ -59,11 +59,80 @@ class ResticRunnerService: ResticRunnerProtocol {
     private static let status = OSAllocatedUnfairLock(initialState: Status.idle)
     private static let process = OSAllocatedUnfairLock<Process?>(initialState: nil)
     private static let logPadding = String(repeating: " ", count: 16)
+    private static let brewBinaryPaths = [
+        "/opt/homebrew/bin/brew",
+        "/usr/local/bin/brew",
+    ]
 
     private let connection: NSXPCConnection
 
     init(connection: NSXPCConnection) {
         self.connection = connection
+    }
+
+    private static func brewBinaryURL() -> URL? {
+        for path in brewBinaryPaths where FileManager.default.isExecutableFile(atPath: path) {
+            return URL(filePath: path)
+        }
+
+        return nil
+    }
+
+    private static func brewfilePath(for homeDirectory: String) -> String {
+        "\(homeDirectory)/.config/brew/Brewfile"
+    }
+
+    private static func prepareSmartBackupFiles(for homeDirectories: [String], loggingTo logURL: URL) -> [String] {
+        guard !homeDirectories.isEmpty else {
+            return []
+        }
+
+        guard let brewBinaryURL = brewBinaryURL() else {
+            try? "\(logPadding)Homebrew not found; skipping Brewfile generation\n".append(to: logURL, encoding: .utf8)
+            return []
+        }
+
+        return homeDirectories.compactMap { dumpBrewfile(using: brewBinaryURL, for: $0, loggingTo: logURL) }
+    }
+
+    private static func dumpBrewfile(using brewBinaryURL: URL, for homeDirectory: String, loggingTo logURL: URL) -> String? {
+        let brewfilePath = brewfilePath(for: homeDirectory)
+        let brewfileURL = URL(filePath: brewfilePath)
+        do {
+            try FileManager.default.createDirectory(at: brewfileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+
+            let process = Process()
+            process.qualityOfService = .utility
+            process.executableURL = brewBinaryURL
+            process.arguments = [
+                "bundle",
+                "dump",
+                "--file=\(brewfilePath)",
+                "--force",
+            ]
+            process.environment = ProcessInfo.processInfo.environment.merging(["HOME": homeDirectory]) { _, new in new }
+
+            let outputPipe = Pipe()
+            process.standardOutput = outputPipe
+            process.standardError = outputPipe
+            try "\(logPadding)Updating Homebrew bundle file: \(brewfilePath)\n".append(to: logURL, encoding: .utf8)
+            try process.run()
+            process.waitUntilExit()
+
+            let output = String(contentsOfPipe: outputPipe)
+            guard process.terminationStatus == 0 else {
+                try "\(logPadding)brew bundle dump failed with code \(process.terminationStatus): \(output)\n".append(to: logURL, encoding: .utf8)
+                return (try? brewfileURL.checkResourceIsReachable()) == true ? brewfilePath : nil
+            }
+
+            if !output.isEmpty {
+                try output.prefixingLines(with: "\(logPadding)brew: ").append(to: logURL, encoding: .utf8)
+            }
+            return brewfilePath
+        } catch {
+            try? "\(logPadding)Unable to update Homebrew bundle file at \(brewfilePath): \(error.localizedDescription)\n".append(to: logURL, encoding: .utf8)
+            return (try? brewfileURL.checkResourceIsReachable()) == true ? brewfilePath : nil
+        }
     }
 
     func version(binary: String?, reply: @escaping (String?, Error?) -> Void) {
@@ -132,12 +201,15 @@ class ResticRunnerService: ResticRunnerProtocol {
         do {
             try FileManager.default.createDirectory(at: options.logURL.deletingLastPathComponent(), withIntermediateDirectories: true)
             try "\(Date().formatted(.rfc3164)) Starting backup...\n".append(to: options.logURL, encoding: .utf8)
+            let smartBackupIncludes = Self.prepareSmartBackupFiles(for: options.smartBackupHomeDirectories, loggingTo: options.logURL)
+            let includes = options.includes.appendingUnique(smartBackupIncludes)
+            let excludes = options.excludes
             try "\(Self.logPadding)includes:\n".append(to: options.logURL, encoding: .utf8)
-            for include in options.includes {
+            for include in includes {
                 try "\(Self.logPadding)  \(include)\n".append(to: options.logURL, encoding: .utf8)
             }
             try "\(Self.logPadding)excludes:\n".append(to: options.logURL, encoding: .utf8)
-            for exclude in options.excludes {
+            for exclude in excludes {
                 try "\(Self.logPadding)  \(exclude)\n".append(to: options.logURL, encoding: .utf8)
             }
             if let beforeBackup = options.beforeBackup {
@@ -151,8 +223,8 @@ class ResticRunnerService: ResticRunnerProtocol {
             try FileManager.default.createDirectory(at: supportURL, withIntermediateDirectories: true)
             let includesURL = supportURL.appending(path: "includes", directoryHint: .notDirectory)
             let excludesURL = supportURL.appending(path: "excludes", directoryHint: .notDirectory)
-            try options.includes.joined(separator: "\n").write(to: includesURL, atomically: true, encoding: .utf8)
-            try options.excludes.joined(separator: "\n").write(to: excludesURL, atomically: true, encoding: .utf8)
+            try includes.joined(separator: "\n").write(to: includesURL, atomically: true, encoding: .utf8)
+            try excludes.joined(separator: "\n").write(to: excludesURL, atomically: true, encoding: .utf8)
             process.arguments = [
                 "--json",
                 "--cache-dir", cacheURL.path(percentEncoded: false), "--cleanup-cache",

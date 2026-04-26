@@ -51,3 +51,14 @@ extension FormatStyle where Self == RFC3164FormatStyle {
 }
 
 extension Process: @unchecked Sendable {}
+
+extension Array where Element == String {
+    func appendingUnique(_ values: [String]) -> [String] {
+        var result = self
+        var seen = Set(self)
+        for value in values where seen.insert(value).inserted {
+            result.append(value)
+        }
+        return result
+    }
+}

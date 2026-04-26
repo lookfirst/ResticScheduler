@@ -26,7 +26,6 @@ struct ResticSettingsView: View {
     @KeychainPassword(\.password) private var password
     @UserDefault(\.includes) private var includes
     @UserDefault(\.excludes) private var excludes
-    @UserDefault(\.intelligentMacOSBackupEnabled) private var intelligentMacOSBackupEnabled
     @UserDefault(\.s3AccessKeyId) private var s3AccessKeyId
     @KeychainPassword(\.s3SecretAccessKey) private var s3SecretAccessKey
     @UserDefault(\.restUsername) private var restUsername
@@ -134,21 +133,9 @@ struct ResticSettingsView: View {
                 Divider()
                     .padding(.vertical, 8)
                 EditableList("Included files:", values: $includes)
-                LabeledContent {
-                    Toggle("Don't back up cache and temporary files", isOn: $intelligentMacOSBackupEnabled)
-                        .toggleStyle(.checkbox)
-                        .fixedSize()
-                        .transaction { transaction in
-                            transaction.animation = nil
-                        }
-                } label: {
-                    Text("Standard excludes:")
-                }
-                .help("Skip generated caches, logs, build products, installers, and other cleanup-safe files. Home Library recommendations are added only when an included path is inside your home folder.")
                 EditableList("Excluded files:", values: $excludes)
             }
             .animation(.default, value: repository)
-            .animation(nil, value: intelligentMacOSBackupEnabled)
             .frame(minWidth: 400, maxWidth: .infinity, alignment: .center)
             .padding()
         }
@@ -159,7 +146,6 @@ struct ResticSettingsView: View {
         }
         .onChange(of: [
             password,
-            intelligentMacOSBackupEnabled,
             includes,
             excludes,
             s3AccessKeyId,

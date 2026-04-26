@@ -279,17 +279,25 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
     private var staleBackupScheduler: NSBackgroundActivityScheduler?
     private var bag = Set<AnyCancellable>()
 
+    private var smartBackupHomeDirectories: [String] {
+        guard intelligentMacOSBackupEnabled else {
+            return []
+        }
+
+        return Self.includedHomeDirectories(includes)
+    }
+
     private var effectiveIncludes: [String] {
         includes
     }
 
-    private var effectiveExcludes: [String] {
+    private func effectiveExcludes(homeDirectories: [String]) -> [String] {
         guard intelligentMacOSBackupEnabled else {
             return excludes
         }
 
         var effectiveExcludes = excludes.appendingUnique(Self.intelligentMacOSGeneralExcludes)
-        for homeDirectory in Self.includedHomeDirectories(includes) {
+        for homeDirectory in homeDirectories {
             effectiveExcludes = effectiveExcludes.appendingUnique(Self.intelligentMacOSHomeExcludes(for: homeDirectory))
         }
         return effectiveExcludes
@@ -409,8 +417,9 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
                 environment["RESTIC_REST_PASSWORD"] = restPassword
             }
 
+            let smartBackupHomeDirectories = self.smartBackupHomeDirectories
             let effectiveIncludes = self.effectiveIncludes
-            let effectiveExcludes = self.effectiveExcludes
+            let effectiveExcludes = self.effectiveExcludes(homeDirectories: smartBackupHomeDirectories)
             TypeLogger.function().info("Starting backup with includes:")
             for include in effectiveIncludes {
                 TypeLogger.function().info("include: \(include, privacy: .public)")
@@ -426,6 +435,7 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
                 arguments: ["--host", host ?? Host.current().localizedName!] + arguments,
                 includes: effectiveIncludes,
                 excludes: effectiveExcludes,
+                smartBackupHomeDirectories: smartBackupHomeDirectories,
                 environment: environment,
                 beforeBackup: beforeBackup?.hook,
                 onSuccess: onSuccess?.hook,

@@ -52,6 +52,7 @@ struct AdvancedSettingsView: View {
     @UserDefault(\.binary) private var binary
     @UserDefault(\.host) private var host
     @UserDefault(\.arguments) private var arguments
+    @UserDefault(\.intelligentMacOSBackupEnabled) private var intelligentMacOSBackupEnabled
     @UserDefault(\.beforeBackup) private var beforeBackup
     @UserDefault(\.onSuccess) private var onSuccess
     @UserDefault(\.onFailure) private var onFailure
@@ -148,6 +149,18 @@ struct AdvancedSettingsView: View {
                 }
                 EditableList("Arguments:", values: $arguments, isBrowseable: false, maxHeight: 220)
                     .padding(.bottom)
+                LabeledContent {
+                    Toggle("Generate a list of includes/excludes specific to macOS", isOn: $intelligentMacOSBackupEnabled)
+                        .toggleStyle(.checkbox)
+                        .fixedSize()
+                        .transaction { transaction in
+                            transaction.animation = nil
+                        }
+                } label: {
+                    Text("Smart backup:")
+                }
+                .help("Skip generated, reinstallable, cloud-synced, and cleanup-safe macOS files. Home Library recommendations and the generated Brewfile are added when an included path is inside your home folder.")
+                .padding(.bottom)
                 HookEditor("Before backup:", hook: $beforeBackup, hooks: [beforeBackup, onSuccess, onFailure])
                 HookEditor("On success:", hook: $onSuccess, hooks: [beforeBackup, onSuccess, onFailure])
                 HookEditor("On failure:", hook: $onFailure, hooks: [beforeBackup, onSuccess, onFailure])
@@ -160,6 +173,7 @@ struct AdvancedSettingsView: View {
             binary,
             host,
             arguments,
+            intelligentMacOSBackupEnabled,
         ] as [AnyHashable]) { _ in resticScheduler.rescheduleStaleBackupCheck() }
         .onChange(of: binary) { _ in binaryVersion.scheduleUpdate(via: resticScheduler, for: binary) }
         .onAppear {

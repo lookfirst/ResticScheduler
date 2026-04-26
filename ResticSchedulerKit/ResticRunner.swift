@@ -2,7 +2,7 @@ import Foundation
 
 @objc public class BackupOptions: NSObject, NSSecureCoding {
     public enum CodingKeys: String, CodingKey {
-        case logURL, summaryURL, arguments, includes, excludes, environment, beforeBackup, onSuccess, onFailure
+        case logURL, summaryURL, arguments, includes, excludes, smartBackupHomeDirectories, environment, beforeBackup, onSuccess, onFailure
     }
 
     public let logURL: URL
@@ -10,17 +10,19 @@ import Foundation
     public let arguments: [String]
     public let includes: [String]
     public let excludes: [String]
+    public let smartBackupHomeDirectories: [String]
     public let environment: [String: String]
     public let beforeBackup: String?
     public let onSuccess: String?
     public let onFailure: String?
 
-    public init(logURL: URL, summaryURL: URL, arguments: [String], includes: [String], excludes: [String], environment: [String: String], beforeBackup: String?, onSuccess: String?, onFailure: String?) {
+    public init(logURL: URL, summaryURL: URL, arguments: [String], includes: [String], excludes: [String], smartBackupHomeDirectories: [String], environment: [String: String], beforeBackup: String?, onSuccess: String?, onFailure: String?) {
         self.logURL = logURL
         self.summaryURL = summaryURL
         self.arguments = arguments
         self.includes = includes
         self.excludes = excludes
+        self.smartBackupHomeDirectories = smartBackupHomeDirectories
         self.environment = environment
         self.beforeBackup = beforeBackup
         self.onSuccess = onSuccess
@@ -35,6 +37,7 @@ import Foundation
         coder.encode(arguments, forKey: CodingKeys.arguments.rawValue)
         coder.encode(includes, forKey: CodingKeys.includes.rawValue)
         coder.encode(excludes, forKey: CodingKeys.excludes.rawValue)
+        coder.encode(smartBackupHomeDirectories, forKey: CodingKeys.smartBackupHomeDirectories.rawValue)
         coder.encode(environment, forKey: CodingKeys.environment.rawValue)
         coder.encode(beforeBackup, forKey: CodingKeys.beforeBackup.rawValue)
         coder.encode(onSuccess, forKey: CodingKeys.onSuccess.rawValue)
@@ -47,6 +50,7 @@ import Foundation
         arguments = coder.decodeArrayOfObjects(ofClass: NSString.self, forKey: CodingKeys.arguments.rawValue)! as [String]
         includes = coder.decodeArrayOfObjects(ofClass: NSString.self, forKey: CodingKeys.includes.rawValue)! as [String]
         excludes = coder.decodeArrayOfObjects(ofClass: NSString.self, forKey: CodingKeys.excludes.rawValue)! as [String]
+        smartBackupHomeDirectories = (coder.decodeArrayOfObjects(ofClass: NSString.self, forKey: CodingKeys.smartBackupHomeDirectories.rawValue) as? [String]) ?? []
         environment = coder.decodeDictionary(withKeyClass: NSString.self, objectClass: NSString.self, forKey: CodingKeys.environment.rawValue)! as [String: String]
         beforeBackup = coder.decodeObject(of: NSString.self, forKey: CodingKeys.beforeBackup.rawValue) as? String
         onSuccess = coder.decodeObject(of: NSString.self, forKey: CodingKeys.onSuccess.rawValue) as? String

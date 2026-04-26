@@ -88,6 +88,7 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
             "\(homeDirectory)/Library/IdentityCaches",
             "\(homeDirectory)/Library/Logs",
             "\(homeDirectory)/Library/Mail Downloads",
+            "\(homeDirectory)/Library/Messages/Attachments",
             "\(homeDirectory)/Library/Metadata",
             "\(homeDirectory)/Library/Saved Application State",
             "\(homeDirectory)/Library/Spotlight",

@@ -66,6 +66,12 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
 
     @Published private(set) var percentDone: Float64 = 0
     @Published private(set) var bytesDone: UInt64 = 0
+    @Published private(set) var totalBytes: UInt64 = 0
+    @Published private(set) var secondsElapsed: UInt64 = 0
+    @Published private(set) var secondsRemaining: UInt64 = 0
+    @Published private(set) var filesDone: UInt64 = 0
+    @Published private(set) var totalFiles: UInt64 = 0
+    @Published private(set) var errorCount: UInt64 = 0
     @Published var status = Status.idle
 
     @UserDefault(\.backupFrequency) private var backupFrequency
@@ -115,7 +121,7 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
             .store(in: &bag)
     }
 
-    func progressDidUpdate(percentDone: Float64, bytesDone: UInt64) {
+    func progressDidUpdate(percentDone: Float64, bytesDone: UInt64, totalBytes: UInt64, secondsElapsed: UInt64, secondsRemaining: UInt64, filesDone: UInt64, totalFiles: UInt64, errorCount: UInt64) {
         lock.withLock {
             DispatchQueue.main.sync {
                 if status == .preparation {
@@ -123,7 +129,20 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
                 }
                 self.percentDone = percentDone
                 self.bytesDone = bytesDone
-                if percentDone >= 1, status == .backup {
+                self.totalBytes = totalBytes
+                self.secondsElapsed = secondsElapsed
+                self.secondsRemaining = secondsRemaining
+                self.filesDone = filesDone
+                self.totalFiles = totalFiles
+                self.errorCount = errorCount
+            }
+        }
+    }
+
+    func backupDidFinishCopying() {
+        lock.withLock {
+            DispatchQueue.main.sync {
+                if status == .backup {
                     status = .finishing
                 }
             }
@@ -138,6 +157,14 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
             }
 
             status = .preparation
+            percentDone = 0
+            bytesDone = 0
+            totalBytes = 0
+            secondsElapsed = 0
+            secondsRemaining = 0
+            filesDone = 0
+            totalFiles = 0
+            errorCount = 0
             let startedContent = UNMutableNotificationContent()
             startedContent.title = "Backup Started"
             startedContent.body = "Restic Scheduler started backing up “\(formatRepository(repository))”."

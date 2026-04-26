@@ -33,6 +33,64 @@ import SwiftUI
         return formatBackupDate(nextScheduledBackupDate)
     }
 
+    private var backupBytesProgress: String {
+        let copied = resticScheduler.bytesDone.formatted(.byteCount(style: .file, allowedUnits: [.gb, .mb]))
+        if resticScheduler.totalBytes > 0 {
+            return "\(copied) / \(resticScheduler.totalBytes.formatted(.byteCount(style: .file, allowedUnits: [.gb, .mb])))"
+        }
+
+        return copied
+    }
+
+    private var backupFilesProgress: String? {
+        if resticScheduler.totalFiles > 0 {
+            return "\(resticScheduler.filesDone.formatted()) / \(resticScheduler.totalFiles.formatted()) files"
+        }
+
+        return nil
+    }
+
+    private var backupErrors: String? {
+        guard resticScheduler.errorCount > 0 else {
+            return nil
+        }
+
+        return "\(resticScheduler.errorCount.formatted()) errors"
+    }
+
+    private var backupPercent: String {
+        let percent = floor(resticScheduler.percentDone * 1000) / 10
+        return "\(percent.formatted(.number.precision(.fractionLength(1))))% done"
+    }
+
+    private func formatDuration(_ seconds: UInt64) -> String? {
+        let formatter = DateComponentsFormatter()
+        formatter.allowedUnits = [.day, .hour, .minute, .second]
+        formatter.unitsStyle = .abbreviated
+        formatter.maximumUnitCount = 2
+        return formatter.string(from: TimeInterval(seconds))
+    }
+
+    private var backupElapsed: String? {
+        guard let duration = formatDuration(resticScheduler.secondsElapsed) else {
+            return nil
+        }
+
+        return "Running for \(duration)"
+    }
+
+    private var backupETA: String? {
+        guard resticScheduler.secondsRemaining > 0 else {
+            return nil
+        }
+
+        guard let duration = formatDuration(resticScheduler.secondsRemaining) else {
+            return nil
+        }
+
+        return "\(duration) remaining"
+    }
+
     private func formatBackupDate(_ date: Date) -> String {
         let relativeDateFormatter = DateFormatter()
         relativeDateFormatter.timeStyle = .short
@@ -47,7 +105,20 @@ import SwiftUI
             case .preparation:
                 Text("Preparing to back up…")
             case .backup:
-                Text("\(resticScheduler.percentDone.formatted(.percent)) done – \(resticScheduler.bytesDone.formatted(.byteCount(style: .file))) copied")
+                if let backupElapsed {
+                    Text(backupElapsed)
+                }
+                Text(backupPercent)
+                Text(backupBytesProgress)
+                if let backupFilesProgress {
+                    Text(backupFilesProgress)
+                }
+                if let backupErrors {
+                    Text(backupErrors)
+                }
+                if let backupETA {
+                    Text(backupETA)
+                }
             case .finishing:
                 Text("Finishing backup…")
                 Text("\(resticScheduler.bytesDone.formatted(.byteCount(style: .file))) copied")

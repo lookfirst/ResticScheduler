@@ -19,12 +19,24 @@ class ResticRunnerService: ResticRunnerProtocol {
 
     private struct StatusMessage: Decodable {
         enum CodingKeys: String, CodingKey {
+            case secondsElapsed = "seconds_elapsed"
+            case secondsRemaining = "seconds_remaining"
             case percentDone = "percent_done"
+            case totalFiles = "total_files"
+            case filesDone = "files_done"
+            case totalBytes = "total_bytes"
             case bytesDone = "bytes_done"
+            case errorCount = "error_count"
         }
 
+        let secondsElapsed: UInt64?
+        let secondsRemaining: UInt64?
         let percentDone: Float64
+        let totalFiles: UInt64?
+        let filesDone: UInt64?
+        let totalBytes: UInt64?
         let bytesDone: UInt64?
+        let errorCount: UInt64?
     }
 
     private enum HookType: String, CustomStringConvertible {
@@ -147,7 +159,51 @@ class ResticRunnerService: ResticRunnerProtocol {
             process.standardOutput = standardOutput
             process.standardError = standardError
             var summary: String?
+            var standardOutputBuffer = Data()
+            var didLogJSONStreamStart = false
             let decoder = JSONDecoder()
+            func processStandardOutputLine(_ data: Data) {
+                do {
+                    if !didLogJSONStreamStart {
+                        try "\(Self.logPadding)restic JSON stream started\n".append(to: options.logURL, encoding: .utf8)
+                        didLogJSONStreamStart = true
+                    }
+                    let line = String(data: data, encoding: .utf8) ?? "<non-utf8 JSON output>"
+                    try "\(Self.logPadding)restic JSON: \(line)\n".append(to: options.logURL, encoding: .utf8)
+                } catch {
+                    TypeLogger.function().warning("Couldn't write restic JSON log: \(error.localizedDescription, privacy: .public)")
+                }
+                if let message = try? decoder.decode(Message.self, from: data) {
+                    switch message.messageType {
+                    case "status":
+                        if let status = try? decoder.decode(StatusMessage.self, from: data) {
+                            resticScheduler.withLock {
+                                value in value?.progressDidUpdate(
+                                    percentDone: status.percentDone,
+                                    bytesDone: status.bytesDone ?? 0,
+                                    totalBytes: status.totalBytes ?? 0,
+                                    secondsElapsed: status.secondsElapsed ?? 0,
+                                    secondsRemaining: status.secondsRemaining ?? 0,
+                                    filesDone: status.filesDone ?? 0,
+                                    totalFiles: status.totalFiles ?? 0,
+                                    errorCount: status.errorCount ?? 0
+                                )
+                            }
+                        } else {
+                            let value = String(data: data, encoding: .utf8)
+                            TypeLogger.function().warning("Invalid status message: \(value ?? "<no value>", privacy: .public)")
+                        }
+                    case "summary":
+                        summary = String(data: data, encoding: .utf8)
+                        resticScheduler.withLock { value in value?.backupDidFinishCopying() }
+                    default:
+                        break
+                    }
+                } else {
+                    let value = String(data: data, encoding: .utf8)
+                    TypeLogger.function().warning("Unexpected message: \(value ?? "<no value>", privacy: .public)")
+                }
+            }
             standardOutput.fileHandleForReading.readabilityHandler = { handle in
                 let data = handle.availableData
                 guard !data.isEmpty else {
@@ -155,23 +211,13 @@ class ResticRunnerService: ResticRunnerProtocol {
                     return
                 }
 
-                if let message = try? decoder.decode(Message.self, from: data) {
-                    switch message.messageType {
-                    case "status":
-                        if let status = try? decoder.decode(StatusMessage.self, from: data) {
-                            resticScheduler.withLock { value in value?.progressDidUpdate(percentDone: round(status.percentDone * 100) / 100.0, bytesDone: status.bytesDone ?? 0) }
-                        } else {
-                            let value = String(data: data, encoding: .utf8)
-                            TypeLogger.function().warning("Invalid status message: \(value ?? "<no value>", privacy: .public)")
-                        }
-                    case "summary":
-                        summary = String(data: data, encoding: .utf8)
-                    default:
-                        break
+                standardOutputBuffer.append(data)
+                while let lineEnd = standardOutputBuffer.firstIndex(of: UInt8(ascii: "\n")) {
+                    let line = standardOutputBuffer[..<lineEnd]
+                    standardOutputBuffer.removeSubrange(...lineEnd)
+                    if !line.isEmpty {
+                        processStandardOutputLine(Data(line))
                     }
-                } else {
-                    let value = String(data: data, encoding: .utf8)
-                    TypeLogger.function().warning("Unexpected message: \(value ?? "<no value>", privacy: .public)")
                 }
             }
             standardError.fileHandleForReading.readabilityHandler = { handle in
@@ -196,6 +242,10 @@ class ResticRunnerService: ResticRunnerProtocol {
             try process.run()
             Self.process.withLock { value in value = process }
             process.waitUntilExit()
+            if !standardOutputBuffer.isEmpty {
+                processStandardOutputLine(standardOutputBuffer)
+                standardOutputBuffer.removeAll()
+            }
             if process.terminationStatus == 0 || process.terminationStatus == 3 {
                 if summary != nil {
                     do {

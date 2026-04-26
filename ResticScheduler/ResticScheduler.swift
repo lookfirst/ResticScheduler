@@ -282,11 +282,19 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
 
     private func nextBackupDate(from date: Date) -> Date? {
         let interval = Duration.seconds(backupFrequency)
-        guard interval.components.seconds > 0 else {
+        let intervalSeconds = interval.components.seconds
+        guard intervalSeconds > 0 else {
             return nil
         }
 
-        return date.addingTimeInterval(TimeInterval(interval.components.seconds)).roundedUpToMinute()
+        let nextDate = date.addingTimeInterval(TimeInterval(intervalSeconds))
+        if intervalSeconds % 3600 == 0 {
+            return nextDate.roundedDownToHour()
+        }
+        if intervalSeconds % 60 == 0 {
+            return nextDate.roundedDownToMinute()
+        }
+        return nextDate
     }
 
     private func scheduledBackup() {
@@ -350,12 +358,11 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
 }
 
 private extension Date {
-    func roundedUpToMinute(calendar: Calendar = .current) -> Date {
-        let components = calendar.dateComponents([.nanosecond, .second], from: self)
-        guard components.second != 0 || components.nanosecond != 0 else {
-            return self
-        }
+    func roundedDownToMinute(calendar: Calendar = .current) -> Date {
+        calendar.date(bySettingHour: calendar.component(.hour, from: self), minute: calendar.component(.minute, from: self), second: 0, of: self)!
+    }
 
-        return calendar.nextDate(after: self, matching: DateComponents(second: 0, nanosecond: 0), matchingPolicy: .nextTime)!
+    func roundedDownToHour(calendar: Calendar = .current) -> Date {
+        calendar.date(bySettingHour: calendar.component(.hour, from: self), minute: 0, second: 0, of: self)!
     }
 }

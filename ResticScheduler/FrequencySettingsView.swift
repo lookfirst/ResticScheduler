@@ -1,4 +1,3 @@
-import Combine
 import SwiftUI
 
 class Frequency: ObservableObject {
@@ -28,13 +27,21 @@ class Frequency: ObservableObject {
     @Published var frequencyType = FrequencyType.daily
     @Published var amount = "1"
 
+    var amountValue: Int? {
+        guard let amountValue = Int(amount), amountValue > 0 else {
+            return nil
+        }
+
+        return amountValue
+    }
+
     var unit: String {
-        Self.units.first(where: { $0.type == frequencyType })!.unit + (amount == "1" ? "" : "s")
+        Self.units.first(where: { $0.type == frequencyType })!.unit + (amountValue == 1 ? "" : "s")
     }
 
     var seconds: Int {
         get {
-            Int(amount)! * Self.units.first(where: { $0.type == frequencyType })!.type.rawValue
+            amountValue! * Self.units.first(where: { $0.type == frequencyType })!.type.rawValue
         }
         set {
             for unit in Self.units {
@@ -75,14 +82,10 @@ struct FrequencySettingsView: View {
                 }
                 HStack {
                     TextField("Every:", text: $frequency.amount)
-                        .onReceive(Just(frequency.amount)) { value in
-                            if let number = Int(value.filter { "0123456789".contains($0) }), number > 0 {
-                                let newValue = String(number)
-                                if newValue != value {
-                                    frequency.amount = newValue
-                                }
-                            } else {
-                                frequency.amount = "1"
+                        .onChange(of: frequency.amount) { newValue in
+                            let sanitizedValue = newValue.filter(\.isNumber)
+                            if sanitizedValue != newValue {
+                                frequency.amount = sanitizedValue
                             }
                         }
                     Text(frequency.unit)
@@ -96,12 +99,15 @@ struct FrequencySettingsView: View {
                     }
                     .keyboardShortcut(.cancelAction)
                     Button {
-                        backupFrequency = frequency.seconds
+                        if frequency.amountValue != nil {
+                            backupFrequency = frequency.seconds
+                        }
                         dismiss()
                     } label: {
                         Text("OK")
                             .frame(maxWidth: .infinity)
                     }
+                    .disabled(frequency.amountValue == nil)
                     .keyboardShortcut(.defaultAction)
                 }
                 .frame(maxWidth: 150)

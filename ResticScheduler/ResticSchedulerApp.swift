@@ -10,6 +10,7 @@ import SwiftUI
     @UserDefault(\.repository) private var repository
     @UserDefault(\.backupFrequency) private var backupFrequency
     @UserDefault(\.lastSuccessfulBackupDate) private var lastSuccessfulBackupDate
+    @UserDefault(\.nextScheduledBackupDate) private var nextScheduledBackupDate
     @UserDefault(\.localizedError) private var localizedError
 
     private var actionLabel: String {
@@ -25,11 +26,11 @@ import SwiftUI
     }
 
     private var nextBackup: String? {
-        guard backupFrequency > 0, let lastSuccessfulBackupDate else {
+        guard backupFrequency > 0, let nextScheduledBackupDate else {
             return nil
         }
 
-        return formatBackupDate(lastSuccessfulBackupDate.addingTimeInterval(TimeInterval(backupFrequency)))
+        return formatBackupDate(nextScheduledBackupDate)
     }
 
     private func formatBackupDate(_ date: Date) -> String {

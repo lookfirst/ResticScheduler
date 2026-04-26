@@ -119,8 +119,7 @@ struct FrequencySettingsView: View {
         .padding()
         .onAppear { frequency.seconds = backupFrequency }
         .onChange(of: backupFrequency) { _ in
-            resticScheduler.rescheduleBackup()
-            resticScheduler.rescheduleStaleBackupCheck()
+            resticScheduler.backupFrequencyDidChange()
         }
     }
 }

@@ -137,8 +137,8 @@ extension UserDefaultValues.Storage.Value: @unchecked Sendable where Value: Send
     private let keyPath: KeyPath<UserDefaultValues, Value>
 
     var wrappedValue: Value {
-        get { UserDefaultValues.shared[keyPath: keyPath] }
-        nonmutating set { UserDefaultValues.shared[keyPath: keyPath as! WritableKeyPath<UserDefaultValues, Value>] = newValue }
+        get { value.value }
+        nonmutating set { value.value = newValue }
     }
 
     var projectedValue: Binding<Value> {

@@ -85,8 +85,7 @@ struct GeneralSettingsView: View {
             .padding()
         }
         .onChange(of: backupFrequency) { _ in
-            resticScheduler.rescheduleBackup()
-            resticScheduler.rescheduleStaleBackupCheck()
+            resticScheduler.backupFrequencyDidChange()
         }
     }
 }

@@ -70,6 +70,7 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
 
     @UserDefault(\.backupFrequency) private var backupFrequency
     @UserDefault(\.lastSuccessfulBackupDate) private var lastSuccessfulBackupDate
+    @UserDefault(\.nextScheduledBackupDate) private var nextScheduledBackupDate
     @UserDefault(\.binary) private var binary
     @UserDefault(\.arguments) private var arguments
     @UserDefault(\.includes) private var includes
@@ -181,7 +182,9 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
                             AppDelegate.shared?.addNotification(content: content)
                         } else {
                             localizedError = nil
-                            lastSuccessfulBackupDate = Date()
+                            let completedAt = Date()
+                            lastSuccessfulBackupDate = completedAt
+                            nextScheduledBackupDate = nextBackupDate(from: completedAt)
                         }
                         status = .idle
                         completion(error)
@@ -235,9 +238,14 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
                 return
             }
 
-            let timer = Timer(timeInterval: TimeInterval(interval.components.seconds), repeats: true) { [weak self] _ in
+            let intervalSeconds = TimeInterval(interval.components.seconds)
+            if nextScheduledBackupDate == nil || nextScheduledBackupDate! <= Date() {
+                nextScheduledBackupDate = nextBackupDate(from: Date())
+            }
+            let timer = Timer(timeInterval: intervalSeconds, repeats: true) { [weak self] _ in
                 self?.scheduledBackup()
             }
+            timer.fireDate = nextScheduledBackupDate!
             backupTimer = timer
             DispatchQueue.main.async {
                 guard timer.isValid else {
@@ -245,8 +253,25 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
                 }
                 RunLoop.main.add(timer, forMode: .common)
             }
-            TypeLogger.function().info("Rescheduled backups, interval: \(interval.formatted(.units(allowed: [.days, .hours, .minutes, .seconds], width: .wide)), privacy: .public)")
+            TypeLogger.function().info("Rescheduled backups, interval: \(interval.formatted(.units(allowed: [.days, .hours, .minutes, .seconds], width: .wide)), privacy: .public), next backup: \(timer.fireDate, privacy: .public)")
         }
+    }
+
+    func backupFrequencyDidChange() {
+        lock.withLock {
+            nextScheduledBackupDate = nextBackupDate(from: Date())
+        }
+        rescheduleBackup()
+        rescheduleStaleBackupCheck()
+    }
+
+    private func nextBackupDate(from date: Date) -> Date? {
+        let interval = Duration.seconds(backupFrequency)
+        guard interval.components.seconds > 0 else {
+            return nil
+        }
+
+        return date.addingTimeInterval(TimeInterval(interval.components.seconds))
     }
 
     private func scheduledBackup() {

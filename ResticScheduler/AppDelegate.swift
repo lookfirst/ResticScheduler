@@ -19,9 +19,11 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
     }
 
     private(set) static var shared: AppDelegate?
+    static weak var resticScheduler: ResticScheduler?
 
     private static let authorizationOptions: UNAuthorizationOptions = [.alert, .sound]
     private var notificationCenter: UNUserNotificationCenter?
+    private var isTerminating = false
 
     func applicationDidFinishLaunching(_: Notification) {
         Self.shared = self
@@ -70,6 +72,31 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
                 break
             }
         }
+    }
+
+    func applicationShouldTerminate(_: NSApplication) -> NSApplication.TerminateReply {
+        guard !isTerminating else {
+            return .terminateNow
+        }
+        guard let resticScheduler = Self.resticScheduler, resticScheduler.status != .idle else {
+            return .terminateNow
+        }
+
+        isTerminating = true
+        TypeLogger.function().info("Application is quitting; stopping running backup before termination")
+        do {
+            try "\(Date().formatted(.rfc3164)) Application is quitting; stopping running backup...\n"
+                .append(to: resticScheduler.logURL, encoding: .utf8)
+        } catch {
+            TypeLogger.function().warning("Couldn't write shutdown notice to restic log: \(error.localizedDescription, privacy: .public)")
+        }
+        resticScheduler.stop { error in
+            if let error {
+                TypeLogger.function().error("Backup stop during application termination failed: \(error.localizedDescription, privacy: .public)")
+            }
+            NSApp.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 
     func addNotification(content: UNMutableNotificationContent) {

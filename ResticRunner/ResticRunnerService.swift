@@ -249,6 +249,13 @@ class ResticRunnerService: ResticRunnerProtocol {
             }
             try process.run()
             Self.process.withLock { value in value = process }
+            defer {
+                Self.process.withLock { value in
+                    if value === process {
+                        value = nil
+                    }
+                }
+            }
             process.waitUntilExit()
             if !standardOutputBuffer.isEmpty {
                 processStandardOutputLine(standardOutputBuffer)

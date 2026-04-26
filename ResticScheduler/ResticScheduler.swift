@@ -263,6 +263,7 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
     }
 
     init() {
+        AppDelegate.resticScheduler = self
         runner.scheduler = self
         rescheduleBackup()
         rescheduleStaleBackupCheck()
@@ -398,14 +399,17 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
         }
     }
 
-    func stop() {
+    func stop(completion: ((Error?) -> Void)? = nil) {
         lock.withLock {
             guard status != .idle, status != .stopping else {
+                completion?(nil)
                 return
             }
 
+            status = .stopping
             runner.stop { [weak self] error in
                 guard let self else {
+                    completion?(error)
                     return
                 }
 
@@ -421,6 +425,7 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
                         }
                     }
                 }
+                completion?(error)
             }
         }
     }

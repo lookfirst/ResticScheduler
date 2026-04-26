@@ -93,6 +93,7 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
             "\(homeDirectory)/Library/Application Support/google-cloud-tools-java/managed-cloud-sdk",
             "\(homeDirectory)/Library/Autosave Information",
             "\(homeDirectory)/Library/Calendars",
+            "\(homeDirectory)/Library/**/Cache",
             "\(homeDirectory)/Library/Caches",
             "\(homeDirectory)/Library/DiagnosticReports",
             "\(homeDirectory)/Library/HTTPStorages",

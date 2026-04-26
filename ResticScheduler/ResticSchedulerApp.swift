@@ -1,5 +1,4 @@
 import ResticSchedulerKit
-import SettingsAccess
 import SwiftUI
 
 @main struct ResticSchedulerApp: App {
@@ -154,18 +153,8 @@ import SwiftUI
             .disabled(resticScheduler.status == .stopping)
             Button("View Restic Logs…", action: showLogs)
             Divider()
-            SettingsLink {
-                Text("Settings…")
-            } preAction: {} postAction: {
-                for window in NSApp.windows {
-                    if let windowId = window.identifier?.rawValue {
-                        if windowId.contains("Settings") {
-                            window.level = .floating
-                            break
-                        }
-                    }
-                }
-                NSApp.activate(ignoringOtherApps: true)
+            Button("Settings…") {
+                SettingsWindowController.show(resticScheduler: resticScheduler)
             }
             Button("About Restic Scheduler") {
                 NSApp.orderFrontStandardAboutPanel()
@@ -177,6 +166,7 @@ import SwiftUI
             SettingsView()
                 .environmentObject(resticScheduler)
         }
+        .windowResizability(.contentSize)
     }
 
     func showLogs() {

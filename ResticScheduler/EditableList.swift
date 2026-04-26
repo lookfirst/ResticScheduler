@@ -20,6 +20,7 @@ struct EditableList: View {
     private let title: any StringProtocol
     private let values: Binding<[String]>
     private let isBrowseable: Bool
+    private let maxHeight: CGFloat?
 
     var body: some View {
         LabeledContent {
@@ -34,7 +35,7 @@ struct EditableList: View {
                     .focused($focused, equals: item.id)
                 }
                 .environment(\.defaultMinListRowHeight, 24)
-                .frame(minHeight: 150)
+                .frame(minHeight: 150, maxHeight: maxHeight)
                 .onChange(of: appendedID) { _ in
                     withAnimation {
                         proxy.scrollTo(appendedID!)
@@ -93,10 +94,11 @@ struct EditableList: View {
         }
     }
 
-    init(_ title: any StringProtocol, values: Binding<[String]>, isBrowseable: Bool = true) {
+    init(_ title: any StringProtocol, values: Binding<[String]>, isBrowseable: Bool = true, maxHeight: CGFloat? = nil) {
         self.title = title
         self.values = values
         self.isBrowseable = isBrowseable
+        self.maxHeight = maxHeight
     }
 
     private func append(_ value: String) {

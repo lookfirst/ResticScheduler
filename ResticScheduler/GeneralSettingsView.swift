@@ -127,7 +127,7 @@ struct GeneralSettingsView: View {
                     FrequencySettingsView()
                 }
             }
-            .frame(width: 400, alignment: .center)
+            .frame(minWidth: 400, maxWidth: .infinity, alignment: .center)
             .padding()
         }
         .onAppear(perform: refreshLaunchAtLogin)

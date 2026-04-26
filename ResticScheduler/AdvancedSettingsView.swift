@@ -146,15 +146,16 @@ struct AdvancedSettingsView: View {
                         .labelsHidden()
                         .disabled(hostType.wrappedValue == .system)
                 }
-                EditableList("Arguments:", values: $arguments, isBrowseable: false)
+                EditableList("Arguments:", values: $arguments, isBrowseable: false, maxHeight: 220)
                     .padding(.bottom)
                 HookEditor("Before backup:", hook: $beforeBackup, hooks: [beforeBackup, onSuccess, onFailure])
                 HookEditor("On success:", hook: $onSuccess, hooks: [beforeBackup, onSuccess, onFailure])
                 HookEditor("On failure:", hook: $onFailure, hooks: [beforeBackup, onSuccess, onFailure])
             }
-            .frame(width: 400, alignment: .center)
+            .frame(minWidth: 400, maxWidth: .infinity, alignment: .center)
             .padding()
         }
+        .frame(maxHeight: .infinity, alignment: .top)
         .onChange(of: [
             binary,
             host,

@@ -63,6 +63,7 @@ class ResticRunnerService: ResticRunnerProtocol {
         "/opt/homebrew/bin/brew",
         "/usr/local/bin/brew",
     ]
+    private static let appleBackupExclusionQuery = "com_apple_backup_excludeItem = 'com.apple.backupd'"
 
     private let connection: NSXPCConnection
 
@@ -135,6 +136,92 @@ class ResticRunnerService: ResticRunnerProtocol {
         }
     }
 
+    private static func appleSpecifiedExcludes(for homeDirectories: [String], loggingTo logURL: URL) -> [String] {
+        guard !homeDirectories.isEmpty else {
+            return []
+        }
+
+        guard let output = runAppleSpecifiedExclusionsQuery(loggingTo: logURL) else {
+            return []
+        }
+
+        let normalizedHomeDirectories = homeDirectories.map { normalizedPath($0) }
+        let excludes = output
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .map { normalizedPath(String($0)) }
+            .filter { candidatePath in normalizedHomeDirectories.contains { homeDirectory in path(candidatePath, isInside: homeDirectory) } }
+            .appendingUnique([])
+
+        do {
+            try "\(logPadding)Apple-specified exclusions: \(excludes.count) path\(excludes.count == 1 ? "" : "s")\n".append(to: logURL, encoding: .utf8)
+        } catch {
+            TypeLogger.function().warning("Couldn't write Apple-specified exclusions log: \(error.localizedDescription, privacy: .public)")
+        }
+        return excludes
+    }
+
+    private static func runAppleSpecifiedExclusionsQuery(loggingTo logURL: URL) -> String? {
+        let process = Process()
+        process.qualityOfService = .utility
+        process.executableURL = URL(filePath: "/usr/bin/mdfind")
+        process.arguments = [appleBackupExclusionQuery]
+
+        let outputURL = FileManager.default.temporaryDirectory
+            .appending(path: "\(Bundle.main.bundleIdentifier!).apple-backup-exclusions.stdout.\(UUID().uuidString)", directoryHint: .notDirectory)
+        let errorURL = FileManager.default.temporaryDirectory
+            .appending(path: "\(Bundle.main.bundleIdentifier!).apple-backup-exclusions.stderr.\(UUID().uuidString)", directoryHint: .notDirectory)
+        _ = FileManager.default.createFile(atPath: outputURL.path(percentEncoded: false), contents: nil)
+        _ = FileManager.default.createFile(atPath: errorURL.path(percentEncoded: false), contents: nil)
+        guard
+            let outputFileHandle = try? FileHandle(forWritingTo: outputURL),
+            let errorFileHandle = try? FileHandle(forWritingTo: errorURL)
+        else {
+            try? "\(logPadding)Apple-specified exclusions unavailable; couldn't open temporary output files\n".append(to: logURL, encoding: .utf8)
+            return nil
+        }
+        defer {
+            outputFileHandle.closeFile()
+            errorFileHandle.closeFile()
+            try? FileManager.default.removeItem(at: outputURL)
+            try? FileManager.default.removeItem(at: errorURL)
+        }
+        process.standardOutput = outputFileHandle
+        process.standardError = errorFileHandle
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            try? "\(logPadding)Apple-specified exclusions unavailable; mdfind failed to start: \(error.localizedDescription)\n".append(to: logURL, encoding: .utf8)
+            return nil
+        }
+
+        let output = ((try? String(contentsOf: outputURL, encoding: .utf8)) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let errorOutput = ((try? String(contentsOf: errorURL, encoding: .utf8)) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard process.terminationStatus == 0 else {
+            try? "\(logPadding)Apple-specified exclusions unavailable; mdfind exited \(process.terminationStatus)\(errorOutput.isEmpty ? "" : " - \(errorOutput)")\n".append(to: logURL, encoding: .utf8)
+            return nil
+        }
+
+        if output.isEmpty {
+            try? "\(logPadding)Apple-specified exclusions: no paths returned by mdfind\n".append(to: logURL, encoding: .utf8)
+            return nil
+        }
+        return output
+    }
+
+    private static func normalizedPath(_ path: String) -> String {
+        var path = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        while path.count > 1, path.hasSuffix("/") {
+            path.removeLast()
+        }
+        return path
+    }
+
+    private static func path(_ path: String, isInside directory: String) -> Bool {
+        path == directory || path.hasPrefix("\(directory)/")
+    }
+
     func version(binary: String?, reply: @escaping (String?, Error?) -> Void) {
         let process = Process()
         process.qualityOfService = .userInitiated
@@ -203,7 +290,8 @@ class ResticRunnerService: ResticRunnerProtocol {
             try "\(Date().formatted(.rfc3164)) Starting backup...\n".append(to: options.logURL, encoding: .utf8)
             let smartBackupIncludes = Self.prepareSmartBackupFiles(for: options.smartBackupHomeDirectories, loggingTo: options.logURL)
             let includes = options.includes.appendingUnique(smartBackupIncludes)
-            let excludes = options.excludes
+            let appleSpecifiedExcludes = Self.appleSpecifiedExcludes(for: options.smartBackupHomeDirectories, loggingTo: options.logURL)
+            let excludes = options.excludes.appendingUnique(appleSpecifiedExcludes)
             try "\(Self.logPadding)includes:\n".append(to: options.logURL, encoding: .utf8)
             for include in includes {
                 try "\(Self.logPadding)  \(include)\n".append(to: options.logURL, encoding: .utf8)

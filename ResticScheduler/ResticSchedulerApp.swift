@@ -3,14 +3,39 @@ import ResticSchedulerKit
 import SwiftUI
 
 @main struct ResticSchedulerApp: App {
-    private typealias TypeLogger = ResticSchedulerKit.TypeLogger<ResticSchedulerApp>
+    @NSApplicationDelegateAdaptor private var appDelegate: AppDelegate
+    private let resticScheduler = ResticScheduler()
+
+    var body: some Scene {
+        MenuBarExtra {
+            ResticSchedulerMenu(resticScheduler: resticScheduler)
+        } label: {
+            ResticSchedulerMenuLabel(resticScheduler: resticScheduler)
+        }
+        Settings {
+            SettingsView()
+                .environmentObject(resticScheduler)
+        }
+        .windowResizability(.contentSize)
+    }
+}
+
+private struct ResticSchedulerMenuLabel: View {
+    @ObservedObject var resticScheduler: ResticScheduler
+
+    var body: some View {
+        Label("Restic Scheduler", image: resticScheduler.status == .idle ? "custom.umbrella.fill" : "custom.umbrella.fill.badge.clock")
+    }
+}
+
+private struct ResticSchedulerMenu: View {
+    private typealias TypeLogger = ResticSchedulerKit.TypeLogger<ResticSchedulerMenu>
     private static let b2StorageDollarsPerTBMonth = 6.0
     private static let b2FreeStorageBytes = 10.0 * 1_000_000_000
     private static let bytesPerDecimalTB = 1_000_000_000_000.0
     private static let b2StorageCostHelp = "Storage-only estimate based on Backblaze B2 Pay-As-You-Go at $6/TB/month, billed over a 30-day month, with the first 10GB free. It does not include egress or API transaction costs."
 
-    @NSApplicationDelegateAdaptor private var appDelegate: AppDelegate
-    @StateObject private var resticScheduler = ResticScheduler()
+    @ObservedObject var resticScheduler: ResticScheduler
     @UserDefault(\.repository) private var repository
     @UserDefault(\.backupFrequency) private var backupFrequency
     @UserDefault(\.lastSuccessfulBackupDate) private var lastSuccessfulBackupDate
@@ -115,6 +140,14 @@ import SwiftUI
         return "\(repositoryStats.fileCount.formatted()) files"
     }
 
+    private var repositoryStorageSnapshots: String? {
+        guard let repositoryStats = resticScheduler.repositoryStats else {
+            return nil
+        }
+
+        return "\(repositoryStats.snapshotCount.formatted()) snapshot\(repositoryStats.snapshotCount == 1 ? "" : "s")"
+    }
+
     private var repositoryStorageCosts: (day: String, month: String, year: String)? {
         guard let repositoryStats = resticScheduler.repositoryStats else {
             return nil
@@ -154,8 +187,8 @@ import SwiftUI
         return relativeDateFormatter.string(from: date)
     }
 
-    var body: some Scene {
-        MenuBarExtra("Restic Scheduler", image: resticScheduler.status == .idle ? "custom.umbrella.fill" : "custom.umbrella.fill.badge.clock") {
+    var body: some View {
+        Group {
             switch resticScheduler.status {
             case .preparation:
                 Text("Preparing to back up…")
@@ -188,7 +221,8 @@ import SwiftUI
                     if isS3Repository {
                         Divider()
                         Text("Repository Storage")
-                        if let repositoryStorageFiles, let repositoryStorageSize {
+                        if let repositoryStorageFiles, let repositoryStorageSize, let repositoryStorageSnapshots {
+                            Text(repositoryStorageSnapshots)
                             Text(repositoryStorageFiles)
                             Text(repositoryStorageSize)
                             if let repositoryStorageCosts {
@@ -241,14 +275,9 @@ import SwiftUI
             }
             Button("Quit Restic Scheduler") { NSApplication.shared.terminate(nil) }
         }
-        Settings {
-            SettingsView()
-                .environmentObject(resticScheduler)
-        }
-        .windowResizability(.contentSize)
     }
 
-    func showLogs() {
+    private func showLogs() {
         guard let exists = try? resticScheduler.logURL.checkResourceIsReachable(), exists else {
             NSAlert.showError(.logNotFound(logURL: resticScheduler.logURL))
             return
@@ -257,7 +286,7 @@ import SwiftUI
         NSWorkspace.shared.open(resticScheduler.logURL)
     }
 
-    func showError() {
+    private func showError() {
         guard let localizedError else {
             return
         }

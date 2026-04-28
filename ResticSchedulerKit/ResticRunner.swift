@@ -2,15 +2,17 @@ import Foundation
 
 @objc public class RepositoryStats: NSObject, NSSecureCoding {
     public enum CodingKeys: String, CodingKey {
-        case fileCount, totalBytes, updatedAt
+        case fileCount, snapshotCount, totalBytes, updatedAt
     }
 
     public let fileCount: UInt64
+    public let snapshotCount: UInt64
     public let totalBytes: UInt64
     public let updatedAt: Date
 
-    public init(fileCount: UInt64, totalBytes: UInt64, updatedAt: Date) {
+    public init(fileCount: UInt64, snapshotCount: UInt64, totalBytes: UInt64, updatedAt: Date) {
         self.fileCount = fileCount
+        self.snapshotCount = snapshotCount
         self.totalBytes = totalBytes
         self.updatedAt = updatedAt
     }
@@ -19,12 +21,14 @@ import Foundation
 
     public func encode(with coder: NSCoder) {
         coder.encode(Int64(fileCount), forKey: CodingKeys.fileCount.rawValue)
+        coder.encode(Int64(snapshotCount), forKey: CodingKeys.snapshotCount.rawValue)
         coder.encode(Int64(totalBytes), forKey: CodingKeys.totalBytes.rawValue)
         coder.encode(updatedAt, forKey: CodingKeys.updatedAt.rawValue)
     }
 
     public required init?(coder: NSCoder) {
         fileCount = UInt64(coder.decodeInt64(forKey: CodingKeys.fileCount.rawValue))
+        snapshotCount = UInt64(coder.decodeInt64(forKey: CodingKeys.snapshotCount.rawValue))
         totalBytes = UInt64(coder.decodeInt64(forKey: CodingKeys.totalBytes.rawValue))
         updatedAt = coder.decodeObject(of: NSDate.self, forKey: CodingKeys.updatedAt.rawValue)! as Date
     }

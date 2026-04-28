@@ -720,7 +720,6 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
                             if let nextScheduledBackupDate {
                                 backupTimer?.fireDate = nextScheduledBackupDate
                             }
-                            refreshRepositoryStats()
                             let content = UNMutableNotificationContent()
                             content.title = "Backup Completed"
                             content.body = "Restic Scheduler finished backing up “\(formatRepository(repository))”."
@@ -728,6 +727,11 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
                         }
                         status = .idle
                         completion(error)
+                        if error == nil {
+                            DispatchQueue.main.async { [weak self] in
+                                self?.refreshRepositoryStats()
+                            }
+                        }
                     }
                 }
             }
@@ -774,6 +778,9 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
             repositoryStats = nil
             repositoryStatsError = nil
             isUpdatingRepositoryStats = false
+            return
+        }
+        guard !isUpdatingRepositoryStats else {
             return
         }
 
@@ -932,15 +939,19 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
                     return
                 }
 
-                DispatchQueue.main.sync {
-                    self.backup { error in
-                        if let error {
-                            TypeLogger.function().error("Failed to run scheduled stale backup: \(error.localizedDescription, privacy: .public)")
-                        } else {
-                            TypeLogger.function().info("Finished scheduled stale backup")
+                DispatchQueue.main.async {
+                    self.lock.withLock {
+                        if self.nextScheduledBackupDate == nil || self.nextScheduledBackupDate! <= Date() {
+                            self.nextScheduledBackupDate = self.nextBackupDate(from: Date())
                         }
-                        completion(.finished)
                     }
+                    self.rescheduleBackup()
+                    if let nextScheduledBackupDate = self.nextScheduledBackupDate {
+                        TypeLogger.function().info("Backup is stale; scheduled next backup for \(nextScheduledBackupDate, privacy: .public)")
+                    } else {
+                        TypeLogger.function().info("Backup is stale, but backups are disabled")
+                    }
+                    completion(.finished)
                 }
             }
             TypeLogger.function().info("Rescheduled stale backup check, interval: \(Duration.seconds(staleCheckInterval).formatted(.units(allowed: [.days, .hours, .minutes, .seconds], width: .wide)), privacy: .public), stale: \(self.isBackupStale, privacy: .public)")

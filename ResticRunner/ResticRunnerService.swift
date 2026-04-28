@@ -39,14 +39,24 @@ class ResticRunnerService: ResticRunnerProtocol {
         let errorCount: UInt64?
     }
 
+    private struct SummaryMessage: Decodable {
+        enum CodingKeys: String, CodingKey {
+            case totalDuration = "total_duration"
+        }
+
+        let totalDuration: TimeInterval
+    }
+
     private struct RepositoryStatsMessage: Decodable {
         enum CodingKeys: String, CodingKey {
             case totalSize = "total_size"
             case totalBlobCount = "total_blob_count"
+            case snapshotsCount = "snapshots_count"
         }
 
         let totalSize: UInt64
         let totalBlobCount: UInt64
+        let snapshotsCount: UInt64
     }
 
     private enum HookType: String, CustomStringConvertible {
@@ -74,6 +84,7 @@ class ResticRunnerService: ResticRunnerProtocol {
         "/usr/local/bin/brew",
     ]
     private static let appleBackupExclusionQuery = "com_apple_backup_excludeItem = 'com.apple.backupd'"
+    private static let repositoryStatsTimeout: TimeInterval = 15 * 60
 
     private let connection: NSXPCConnection
 
@@ -233,7 +244,11 @@ class ResticRunnerService: ResticRunnerProtocol {
     }
 
     private static func formattedDuration(from startedAt: Date, to finishedAt: Date) -> String {
-        let seconds = max(0, Int(finishedAt.timeIntervalSince(startedAt).rounded()))
+        formattedDuration(finishedAt.timeIntervalSince(startedAt))
+    }
+
+    private static func formattedDuration(_ duration: TimeInterval) -> String {
+        let seconds = max(0, Int(duration.rounded()))
         let hours = seconds / 3600
         let minutes = seconds % 3600 / 60
         let remainingSeconds = seconds % 60
@@ -309,17 +324,64 @@ class ResticRunnerService: ResticRunnerProtocol {
             let standardError = Pipe()
             process.standardOutput = standardOutput
             process.standardError = standardError
+            let outputLock = NSLock()
+            var outputData = Data()
+            var errorData = Data()
+            let processFinished = DispatchSemaphore(value: 0)
+            process.terminationHandler = { _ in
+                processFinished.signal()
+            }
+            standardOutput.fileHandleForReading.readabilityHandler = { handle in
+                let data = handle.availableData
+                guard !data.isEmpty else {
+                    handle.readabilityHandler = nil
+                    return
+                }
+
+                outputLock.withLock {
+                    outputData.append(data)
+                }
+            }
+            standardError.fileHandleForReading.readabilityHandler = { handle in
+                let data = handle.availableData
+                guard !data.isEmpty else {
+                    handle.readabilityHandler = nil
+                    return
+                }
+
+                outputLock.withLock {
+                    errorData.append(data)
+                }
+            }
             do {
                 try process.run()
-                process.waitUntilExit()
-                let output = String(contentsOfPipe: standardOutput)
-                let errorOutput = String(contentsOfPipe: standardError)
+                let timedOut = processFinished.wait(timeout: .now() + Self.repositoryStatsTimeout) == .timedOut
+                if timedOut {
+                    Self.writeRepositoryStatsLog("repository stats timed out after \(Self.formattedDuration(Self.repositoryStatsTimeout)); terminating process\n", to: logURL)
+                    process.terminate()
+                    _ = processFinished.wait(timeout: .now() + 10)
+                }
+                standardOutput.fileHandleForReading.readabilityHandler = nil
+                standardError.fileHandleForReading.readabilityHandler = nil
+                if !process.isRunning {
+                    outputLock.withLock {
+                        outputData.append(standardOutput.fileHandleForReading.readDataToEndOfFile())
+                        errorData.append(standardError.fileHandleForReading.readDataToEndOfFile())
+                    }
+                }
+
+                let output = outputLock.withLock { String(decoding: outputData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) }
+                let errorOutput = outputLock.withLock { String(decoding: errorData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines) }
                 Self.writeRepositoryStatsOutputLog(name: "stdout", output: output, to: logURL)
                 Self.writeRepositoryStatsOutputLog(name: "stderr", output: errorOutput, to: logURL)
-                if process.terminationStatus == 0, let data = output.data(using: .utf8) {
+                if timedOut {
+                    let error = ProcessError.abnormalTermination(terminationStatus: -1, standardError: "Repository stats timed out after \(Self.formattedDuration(Self.repositoryStatsTimeout))")
+                    TypeLogger.function().error("\(error.localizedDescription, privacy: .public)")
+                    reply(nil, error)
+                } else if process.terminationStatus == 0, let data = output.data(using: .utf8) {
                     do {
                         let stats = try JSONDecoder().decode(RepositoryStatsMessage.self, from: data)
-                        reply(RepositoryStats(fileCount: stats.totalBlobCount, totalBytes: stats.totalSize, updatedAt: Date()), nil)
+                        reply(RepositoryStats(fileCount: stats.totalBlobCount, snapshotCount: stats.snapshotsCount, totalBytes: stats.totalSize, updatedAt: Date()), nil)
                     } catch {
                         TypeLogger.function().error("Couldn't decode repository stats: \(error.localizedDescription, privacy: .public)")
                         reply(nil, error)
@@ -432,6 +494,7 @@ class ResticRunnerService: ResticRunnerProtocol {
             process.standardOutput = standardOutput
             process.standardError = standardError
             var summary: String?
+            var activeDuration: TimeInterval?
             var standardOutputBuffer = Data()
             var didLogJSONStreamStart = false
             let decoder = JSONDecoder()
@@ -468,6 +531,7 @@ class ResticRunnerService: ResticRunnerProtocol {
                         }
                     case "summary":
                         summary = String(data: data, encoding: .utf8)
+                        activeDuration = (try? decoder.decode(SummaryMessage.self, from: data))?.totalDuration
                         resticScheduler.withLock { value in value?.backupDidFinishCopying() }
                     default:
                         break
@@ -540,7 +604,9 @@ class ResticRunnerService: ResticRunnerProtocol {
                 }
                 do {
                     let finishedAt = Date()
-                    try "\(finishedAt.formatted(.rfc3164)) Finished backup in \(Self.formattedDuration(from: startedAt, to: finishedAt))\n\n".append(to: options.logURL, encoding: .utf8)
+                    let wallClockDuration = Self.formattedDuration(from: startedAt, to: finishedAt)
+                    let duration = activeDuration.map { "\(Self.formattedDuration($0)) active (\(wallClockDuration) wall clock)" } ?? wallClockDuration
+                    try "\(finishedAt.formatted(.rfc3164)) Finished backup in \(duration)\n\n".append(to: options.logURL, encoding: .utf8)
                 } catch {
                     TypeLogger.function().warning("Couldn't write log: \(error.localizedDescription, privacy: .public)")
                 }

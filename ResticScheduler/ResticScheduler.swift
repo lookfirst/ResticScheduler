@@ -19,6 +19,11 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
             activateRemoteObjectProxyWithErrorHandler { error in replyOnce(nil, error) }?.version(binary: binary, reply: replyOnce)
         }
 
+        func repositoryStats(binary: String?, repository: String, environment: [String: String], logURL: URL, reply: @escaping (RepositoryStats?, Error?) -> Void) {
+            let replyOnce = withCallingReplyOnce(reply)
+            activateRemoteObjectProxyWithErrorHandler { error in replyOnce(nil, error) }?.repositoryStats(binary: binary, repository: repository, environment: environment, logURL: logURL, reply: replyOnce)
+        }
+
         func backup(binary: String?, options: BackupOptions, reply: @escaping (Error?) -> Void) {
             let replyOnce = withCallingReplyOnce(reply)
             activateRemoteObjectProxyWithErrorHandler(exporting: ResticSchedulerProtocol.self, via: scheduler!) { error in replyOnce(error) }?.backup(binary: binary, options: options, reply: replyOnce)
@@ -318,6 +323,7 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
             "\(homeDirectory)/Library/Group Containers/*/Library/Logs",
             "\(homeDirectory)/Library/Group Containers/*/tmp",
             "\(homeDirectory)/Library/Group Containers/*mimestream*",
+            "\(homeDirectory)/Library/Group Containers/*.ru.keepcoder.Telegram",
             "\(homeDirectory)/Library/Group Containers/com.apple.Home.group",
             "\(homeDirectory)/Library/Group Containers/com.apple.MailPersonaStorage",
             "\(homeDirectory)/Library/Group Containers/com.apple.bird",
@@ -507,6 +513,9 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
     @Published private(set) var filesDone: UInt64 = 0
     @Published private(set) var totalFiles: UInt64 = 0
     @Published private(set) var errorCount: UInt64 = 0
+    @Published private(set) var repositoryStats: RepositoryStats?
+    @Published private(set) var repositoryStatsError: String?
+    @Published private(set) var isUpdatingRepositoryStats = false
     @Published var status = Status.idle
 
     @UserDefault(\.backupFrequency) private var backupFrequency
@@ -601,6 +610,7 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
         runner.scheduler = self
         rescheduleBackup()
         rescheduleStaleBackupCheck()
+        refreshRepositoryStats()
         NotificationCenter.default.publisher(for: .NSCalendarDayChanged)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.objectWillChange.send() }
@@ -656,22 +666,7 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
             startedContent.body = "Restic Scheduler started backing up “\(formatRepository(repository))”."
             AppDelegate.shared?.addNotification(content: startedContent)
 
-            var environment = [
-                "RESTIC_REPOSITORY": repository,
-                "RESTIC_PASSWORD": password,
-            ]
-            if let s3AccessKeyId {
-                environment["AWS_ACCESS_KEY_ID"] = s3AccessKeyId
-            }
-            if let s3SecretAccessKey {
-                environment["AWS_SECRET_ACCESS_KEY"] = s3SecretAccessKey
-            }
-            if let restUsername {
-                environment["RESTIC_REST_USERNAME"] = restUsername
-            }
-            if let restPassword {
-                environment["RESTIC_REST_PASSWORD"] = restPassword
-            }
+            let environment = repositoryEnvironment
 
             let smartBackupHomeDirectories = self.smartBackupHomeDirectories
             let effectiveIncludes = self.effectiveIncludes
@@ -725,6 +720,7 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
                             if let nextScheduledBackupDate {
                                 backupTimer?.fireDate = nextScheduledBackupDate
                             }
+                            refreshRepositoryStats()
                             let content = UNMutableNotificationContent()
                             content.title = "Backup Completed"
                             content.body = "Restic Scheduler finished backing up “\(formatRepository(repository))”."
@@ -773,8 +769,55 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
         runner.version(binary: binary, reply: completion)
     }
 
+    func refreshRepositoryStats() {
+        guard repository.hasPrefix(RepositoryType.s3.rawValue) else {
+            repositoryStats = nil
+            repositoryStatsError = nil
+            isUpdatingRepositoryStats = false
+            return
+        }
+
+        isUpdatingRepositoryStats = true
+        repositoryStatsError = nil
+        runner.repositoryStats(binary: binary, repository: repository, environment: repositoryEnvironment, logURL: logURL) { [weak self] stats, error in
+            DispatchQueue.main.async {
+                guard let self else {
+                    return
+                }
+
+                self.isUpdatingRepositoryStats = false
+                if let stats {
+                    self.repositoryStats = stats
+                    self.repositoryStatsError = nil
+                } else {
+                    self.repositoryStatsError = error?.localizedDescription ?? "Repository stats unavailable"
+                }
+            }
+        }
+    }
+
     func includesBuiltIn(completion: @escaping (Bool) -> Void) {
         runner.includesBuiltIn(reply: completion)
+    }
+
+    private var repositoryEnvironment: [String: String] {
+        var environment = [
+            "RESTIC_REPOSITORY": repository,
+            "RESTIC_PASSWORD": password,
+        ]
+        if let s3AccessKeyId {
+            environment["AWS_ACCESS_KEY_ID"] = s3AccessKeyId
+        }
+        if let s3SecretAccessKey {
+            environment["AWS_SECRET_ACCESS_KEY"] = s3SecretAccessKey
+        }
+        if let restUsername {
+            environment["RESTIC_REST_USERNAME"] = restUsername
+        }
+        if let restPassword {
+            environment["RESTIC_REST_PASSWORD"] = restPassword
+        }
+        return environment
     }
 
     func rescheduleBackup() {

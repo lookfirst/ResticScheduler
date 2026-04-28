@@ -143,6 +143,7 @@ struct ResticSettingsView: View {
             lastSuccessfulBackupDate = nil
             localizedError = nil
             resticScheduler.rescheduleStaleBackupCheck()
+            resticScheduler.refreshRepositoryStats()
         }
         .onChange(of: [
             password,
@@ -154,6 +155,7 @@ struct ResticSettingsView: View {
             restPassword,
         ] as [AnyHashable]) { _ in
             resticScheduler.rescheduleStaleBackupCheck()
+            resticScheduler.refreshRepositoryStats()
         }
     }
 }

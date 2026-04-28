@@ -39,6 +39,16 @@ class ResticRunnerService: ResticRunnerProtocol {
         let errorCount: UInt64?
     }
 
+    private struct RepositoryStatsMessage: Decodable {
+        enum CodingKeys: String, CodingKey {
+            case totalSize = "total_size"
+            case totalBlobCount = "total_blob_count"
+        }
+
+        let totalSize: UInt64
+        let totalBlobCount: UInt64
+    }
+
     private enum HookType: String, CustomStringConvertible {
         case beforeBackup = "before_backup"
         case onSuccess = "on_success"
@@ -266,6 +276,83 @@ class ResticRunnerService: ResticRunnerProtocol {
         } catch {
             TypeLogger.function().error("\(error.localizedDescription, privacy: .public)")
             reply(nil, error)
+        }
+    }
+
+    func repositoryStats(binary: String?, repository: String, environment: [String: String], logURL: URL, reply: @escaping (RepositoryStats?, Error?) -> Void) {
+        DispatchQueue.global(qos: .utility).async {
+            let process = Process()
+            process.qualityOfService = .utility
+            guard let executableURL = resticURL(forBinary: binary) else {
+                reply(nil, ProcessError.missingRestic)
+                return
+            }
+
+            process.executableURL = executableURL
+            let arguments = [
+                "--json",
+                "--no-lock",
+                "stats",
+                "--mode", "raw-data",
+            ]
+            process.arguments = arguments
+            process.environment = ProcessInfo.processInfo.environment
+                .merging(environment) { _, new in new }
+                .merging(["RESTIC_REPOSITORY": repository]) { _, new in new }
+            let command = ([executableURL.path] + arguments)
+                .map(Self.shellQuoted)
+                .joined(separator: " ")
+            Self.writeRepositoryStatsLog("repository stats command: \(command)\n", to: logURL)
+            Self.writeRepositoryStatsLog("repository stats repository: \(repository)\n", to: logURL)
+
+            let standardOutput = Pipe()
+            let standardError = Pipe()
+            process.standardOutput = standardOutput
+            process.standardError = standardError
+            do {
+                try process.run()
+                process.waitUntilExit()
+                let output = String(contentsOfPipe: standardOutput)
+                let errorOutput = String(contentsOfPipe: standardError)
+                Self.writeRepositoryStatsOutputLog(name: "stdout", output: output, to: logURL)
+                Self.writeRepositoryStatsOutputLog(name: "stderr", output: errorOutput, to: logURL)
+                if process.terminationStatus == 0, let data = output.data(using: .utf8) {
+                    do {
+                        let stats = try JSONDecoder().decode(RepositoryStatsMessage.self, from: data)
+                        reply(RepositoryStats(fileCount: stats.totalBlobCount, totalBytes: stats.totalSize, updatedAt: Date()), nil)
+                    } catch {
+                        TypeLogger.function().error("Couldn't decode repository stats: \(error.localizedDescription, privacy: .public)")
+                        reply(nil, error)
+                    }
+                } else {
+                    let error = ProcessError.abnormalTermination(terminationStatus: process.terminationStatus, standardError: errorOutput)
+                    TypeLogger.function().error("\(error.localizedDescription, privacy: .public)")
+                    reply(nil, error)
+                }
+            } catch {
+                TypeLogger.function().error("\(error.localizedDescription, privacy: .public)")
+                reply(nil, error)
+            }
+        }
+    }
+
+    private static func shellQuoted(_ value: String) -> String {
+        "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
+    }
+
+    private static func writeRepositoryStatsOutputLog(name: String, output: String, to logURL: URL) {
+        if output.isEmpty {
+            writeRepositoryStatsLog("repository stats \(name): <empty>\n", to: logURL)
+        } else {
+            writeRepositoryStatsLog("repository stats \(name):\n\(output.prefixingLines(with: "\(logPadding)  "))", to: logURL)
+        }
+    }
+
+    private static func writeRepositoryStatsLog(_ value: String, to logURL: URL) {
+        do {
+            try "\(logPadding)\(value)".append(to: logURL, encoding: .utf8)
+        } catch {
+            TypeLogger.function().warning("Couldn't write repository stats log: \(error.localizedDescription, privacy: .public)")
         }
     }
 

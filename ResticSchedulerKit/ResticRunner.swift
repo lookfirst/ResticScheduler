@@ -1,5 +1,35 @@
 import Foundation
 
+@objc public class RepositoryStats: NSObject, NSSecureCoding {
+    public enum CodingKeys: String, CodingKey {
+        case fileCount, totalBytes, updatedAt
+    }
+
+    public let fileCount: UInt64
+    public let totalBytes: UInt64
+    public let updatedAt: Date
+
+    public init(fileCount: UInt64, totalBytes: UInt64, updatedAt: Date) {
+        self.fileCount = fileCount
+        self.totalBytes = totalBytes
+        self.updatedAt = updatedAt
+    }
+
+    public static var supportsSecureCoding: Bool { true }
+
+    public func encode(with coder: NSCoder) {
+        coder.encode(Int64(fileCount), forKey: CodingKeys.fileCount.rawValue)
+        coder.encode(Int64(totalBytes), forKey: CodingKeys.totalBytes.rawValue)
+        coder.encode(updatedAt, forKey: CodingKeys.updatedAt.rawValue)
+    }
+
+    public required init?(coder: NSCoder) {
+        fileCount = UInt64(coder.decodeInt64(forKey: CodingKeys.fileCount.rawValue))
+        totalBytes = UInt64(coder.decodeInt64(forKey: CodingKeys.totalBytes.rawValue))
+        updatedAt = coder.decodeObject(of: NSDate.self, forKey: CodingKeys.updatedAt.rawValue)! as Date
+    }
+}
+
 @objc public class BackupOptions: NSObject, NSSecureCoding {
     public enum CodingKeys: String, CodingKey {
         case logURL, summaryURL, arguments, includes, excludes, smartBackupHomeDirectories, environment, beforeBackup, onSuccess, onFailure
@@ -167,6 +197,7 @@ public enum BackupError: CustomNSError, LocalizedError, _ObjectiveCBridgeableErr
 
 @objc public protocol ResticRunnerProtocol {
     func version(binary: String?, reply: @escaping (String?, Error?) -> Void)
+    func repositoryStats(binary: String?, repository: String, environment: [String: String], logURL: URL, reply: @escaping (RepositoryStats?, Error?) -> Void)
     func backup(binary: String?, options: BackupOptions, reply: @escaping (Error?) -> Void)
     func stop(reply: @escaping (Error?) -> Void)
     func includesBuiltIn(reply: @escaping (Bool) -> Void)

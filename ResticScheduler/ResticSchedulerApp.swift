@@ -1,8 +1,13 @@
+import Foundation
 import ResticSchedulerKit
 import SwiftUI
 
 @main struct ResticSchedulerApp: App {
     private typealias TypeLogger = ResticSchedulerKit.TypeLogger<ResticSchedulerApp>
+    private static let b2StorageDollarsPerTBMonth = 6.0
+    private static let b2FreeStorageBytes = 10.0 * 1_000_000_000
+    private static let bytesPerDecimalTB = 1_000_000_000_000.0
+    private static let b2StorageCostHelp = "Storage-only estimate based on Backblaze B2 Pay-As-You-Go at $6/TB/month, billed over a 30-day month, with the first 10GB free. It does not include egress or API transaction costs."
 
     @NSApplicationDelegateAdaptor private var appDelegate: AppDelegate
     @StateObject private var resticScheduler = ResticScheduler()
@@ -90,6 +95,57 @@ import SwiftUI
         return "\(duration) remaining"
     }
 
+    private var isS3Repository: Bool {
+        repository.hasPrefix(RepositoryType.s3.rawValue)
+    }
+
+    private var repositoryStorageSize: String? {
+        guard let repositoryStats = resticScheduler.repositoryStats else {
+            return nil
+        }
+
+        return "\(repositoryStats.totalBytes.formatted(.byteCount(style: .file))) stored"
+    }
+
+    private var repositoryStorageFiles: String? {
+        guard let repositoryStats = resticScheduler.repositoryStats else {
+            return nil
+        }
+
+        return "\(repositoryStats.fileCount.formatted()) files"
+    }
+
+    private var repositoryStorageCosts: (day: String, month: String, year: String)? {
+        guard let repositoryStats = resticScheduler.repositoryStats else {
+            return nil
+        }
+
+        let chargeableBytes = max(0, Double(repositoryStats.totalBytes) - Self.b2FreeStorageBytes)
+        let monthlyCost = chargeableBytes / Self.bytesPerDecimalTB * Self.b2StorageDollarsPerTBMonth
+        return (
+            "\(formatEstimatedCost(monthlyCost / 30))/day",
+            "\(formatEstimatedCost(monthlyCost))/month",
+            "\(formatEstimatedCost(monthlyCost * 12))/year"
+        )
+    }
+
+    private func formatEstimatedCost(_ value: Double) -> String {
+        guard value > 0 else {
+            return "$0.00"
+        }
+
+        if value < 0.01 {
+            return "<$0.01"
+        }
+
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .currency
+        formatter.currencyCode = "USD"
+        formatter.minimumFractionDigits = 2
+        formatter.maximumFractionDigits = 2
+        return formatter.string(from: NSNumber(value: value)) ?? "$\(value.formatted(.number.precision(.fractionLength(2))))"
+    }
+
     private func formatBackupDate(_ date: Date) -> String {
         let relativeDateFormatter = DateFormatter()
         relativeDateFormatter.timeStyle = .short
@@ -128,6 +184,29 @@ import SwiftUI
                     if let nextBackup {
                         Text("Next Backup")
                         Text(nextBackup)
+                    }
+                    if isS3Repository {
+                        Divider()
+                        Text("Repository Storage")
+                        if let repositoryStorageFiles, let repositoryStorageSize {
+                            Text(repositoryStorageFiles)
+                            Text(repositoryStorageSize)
+                            if let repositoryStorageCosts {
+                                Text("Estimated B2 Storage Cost")
+                                    .help(Self.b2StorageCostHelp)
+                                Text(repositoryStorageCosts.day)
+                                    .help(Self.b2StorageCostHelp)
+                                Text(repositoryStorageCosts.month)
+                                    .help(Self.b2StorageCostHelp)
+                                Text(repositoryStorageCosts.year)
+                                    .help(Self.b2StorageCostHelp)
+                            }
+                        } else if resticScheduler.isUpdatingRepositoryStats {
+                            Text("Updating storage stats…")
+                        } else {
+                            Text("Storage stats unavailable")
+                                .help(resticScheduler.repositoryStatsError ?? "")
+                        }
                     }
                     if localizedError != nil {
                         Button("Backup Failed…", action: showError)

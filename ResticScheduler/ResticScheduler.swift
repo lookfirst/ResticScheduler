@@ -722,6 +722,9 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
                             let completedAt = Date()
                             lastSuccessfulBackupDate = completedAt
                             nextScheduledBackupDate = nextBackupDate(from: completedAt)
+                            if let nextScheduledBackupDate {
+                                backupTimer?.fireDate = nextScheduledBackupDate
+                            }
                             let content = UNMutableNotificationContent()
                             content.title = "Backup Completed"
                             content.body = "Restic Scheduler finished backing up “\(formatRepository(repository))”."
@@ -787,7 +790,7 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
             if nextScheduledBackupDate == nil || nextScheduledBackupDate! <= Date() {
                 nextScheduledBackupDate = nextBackupDate(from: Date())
             }
-            let timer = Timer(timeInterval: intervalSeconds, repeats: true) { [weak self] _ in
+            let timer = Timer(timeInterval: intervalSeconds, repeats: false) { [weak self] _ in
                 self?.scheduledBackup()
             }
             timer.fireDate = nextScheduledBackupDate!
@@ -828,25 +831,34 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
     }
 
     private func scheduledBackup() {
-        lock.withLock {
+        let shouldRun = lock.withLock {
             guard status == .idle else {
                 nextScheduledBackupDate = nextBackupDate(from: Date())
                 if let nextScheduledBackupDate {
-                    backupTimer?.fireDate = nextScheduledBackupDate
                     TypeLogger.function().info("Skipped scheduled backup because another backup is in progress, next backup: \(nextScheduledBackupDate, privacy: .public)")
                 } else {
                     TypeLogger.function().info("Skipped scheduled backup because another backup is in progress")
                 }
-                return
+                return false
             }
+            return true
+        }
+
+        guard shouldRun else {
+            rescheduleBackup()
+            return
         }
 
         backup { error in
             if let error {
                 TypeLogger.function().error("Failed to run scheduled backup: \(error.localizedDescription, privacy: .public)")
+                self.lock.withLock {
+                    self.nextScheduledBackupDate = self.nextBackupDate(from: Date())
+                }
             } else {
                 TypeLogger.function().info("Finished scheduled backup")
             }
+            self.rescheduleBackup()
         }
     }
 

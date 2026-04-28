@@ -222,6 +222,23 @@ class ResticRunnerService: ResticRunnerProtocol {
         path == directory || path.hasPrefix("\(directory)/")
     }
 
+    private static func formattedDuration(from startedAt: Date, to finishedAt: Date) -> String {
+        let seconds = max(0, Int(finishedAt.timeIntervalSince(startedAt).rounded()))
+        let hours = seconds / 3600
+        let minutes = seconds % 3600 / 60
+        let remainingSeconds = seconds % 60
+
+        var components = [String]()
+        if hours > 0 {
+            components.append("\(hours)h")
+        }
+        if minutes > 0 || hours > 0 {
+            components.append("\(minutes)m")
+        }
+        components.append("\(remainingSeconds)s")
+        return components.joined(separator: " ")
+    }
+
     func version(binary: String?, reply: @escaping (String?, Error?) -> Void) {
         let process = Process()
         process.qualityOfService = .userInitiated
@@ -285,9 +302,10 @@ class ResticRunnerService: ResticRunnerProtocol {
         process.environment = ProcessInfo.processInfo.environment
             .merging(options.environment) { _, new in new }
             .merging(["RESTIC_PROGRESS_FPS": "0.2"]) { _, new in new }
+        let startedAt = Date()
         do {
             try FileManager.default.createDirectory(at: options.logURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try "\(Date().formatted(.rfc3164)) Starting backup...\n".append(to: options.logURL, encoding: .utf8)
+            try "\(startedAt.formatted(.rfc3164)) Starting backup...\n".append(to: options.logURL, encoding: .utf8)
             let smartBackupIncludes = Self.prepareSmartBackupFiles(for: options.smartBackupHomeDirectories, loggingTo: options.logURL)
             let includes = options.includes.appendingUnique(smartBackupIncludes)
             let appleSpecifiedExcludes = Self.appleSpecifiedExcludes(for: options.smartBackupHomeDirectories, loggingTo: options.logURL)
@@ -434,7 +452,8 @@ class ResticRunnerService: ResticRunnerProtocol {
                     runHook(onSuccess, ofType: .onSuccess, loggingTo: options.logURL)
                 }
                 do {
-                    try "\n".append(to: options.logURL, encoding: .utf8)
+                    let finishedAt = Date()
+                    try "\(finishedAt.formatted(.rfc3164)) Finished backup in \(Self.formattedDuration(from: startedAt, to: finishedAt))\n\n".append(to: options.logURL, encoding: .utf8)
                 } catch {
                     TypeLogger.function().warning("Couldn't write log: \(error.localizedDescription, privacy: .public)")
                 }
@@ -446,7 +465,8 @@ class ResticRunnerService: ResticRunnerProtocol {
                     runHook(onFailure, ofType: .onFailure, loggingTo: options.logURL)
                 }
                 do {
-                    try "\n".append(to: options.logURL, encoding: .utf8)
+                    let finishedAt = Date()
+                    try "\(finishedAt.formatted(.rfc3164)) Backup failed after \(Self.formattedDuration(from: startedAt, to: finishedAt))\n\n".append(to: options.logURL, encoding: .utf8)
                 } catch {
                     TypeLogger.function().warning("Couldn't write log: \(error.localizedDescription, privacy: .public)")
                 }
@@ -454,6 +474,12 @@ class ResticRunnerService: ResticRunnerProtocol {
             }
         } catch {
             TypeLogger.function().error("\(error.localizedDescription, privacy: .public)")
+            do {
+                let finishedAt = Date()
+                try "\(finishedAt.formatted(.rfc3164)) Backup failed after \(Self.formattedDuration(from: startedAt, to: finishedAt)): \(error.localizedDescription)\n\n".append(to: options.logURL, encoding: .utf8)
+            } catch {
+                TypeLogger.function().warning("Couldn't write log: \(error.localizedDescription, privacy: .public)")
+            }
             reply(error)
         }
     }

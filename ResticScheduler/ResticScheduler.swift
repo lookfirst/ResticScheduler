@@ -516,6 +516,7 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
     @Published private(set) var repositoryStats: RepositoryStats?
     @Published private(set) var repositoryStatsError: String?
     @Published private(set) var isUpdatingRepositoryStats = false
+    private var pendingRepositoryStatsRefresh = false
     @Published var status = Status.idle
 
     @UserDefault(\.backupFrequency) private var backupFrequency
@@ -618,10 +619,14 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
     }
 
     func progressDidUpdate(percentDone: Float64, bytesDone: UInt64, totalBytes: UInt64, secondsElapsed: UInt64, secondsRemaining: UInt64, filesDone: UInt64, totalFiles: UInt64, errorCount: UInt64) {
-        lock.withLock {
-            DispatchQueue.main.sync {
-                if status == .preparation {
-                    status = .backup
+        DispatchQueue.main.async { [weak self] in
+            guard let self else {
+                return
+            }
+
+            self.lock.withLock {
+                if self.status == .preparation {
+                    self.status = .backup
                 }
                 self.percentDone = percentDone
                 self.bytesDone = bytesDone
@@ -636,20 +641,25 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
     }
 
     func backupDidFinishCopying() {
-        lock.withLock {
-            DispatchQueue.main.sync {
-                if status == .backup {
-                    status = .finishing
+        DispatchQueue.main.async { [weak self] in
+            guard let self else {
+                return
+            }
+
+            self.lock.withLock {
+                if self.status == .backup {
+                    self.status = .finishing
                 }
             }
         }
     }
 
     func backup(completion: @escaping ((Error?) -> Void)) {
-        lock.withLock {
+        var options: BackupOptions?
+        let binary = self.binary
+        let immediateError: Error? = lock.withLock {
             guard status == .idle else {
-                completion(status == .preparation ? BackupError.preparationInProcess : BackupError.backupInProcess)
-                return
+                return status == .preparation ? BackupError.preparationInProcess : BackupError.backupInProcess
             }
 
             status = .preparation
@@ -680,7 +690,7 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
                 TypeLogger.function().info("exclude: \(exclude, privacy: .public)")
             }
 
-            let options = BackupOptions(
+            options = BackupOptions(
                 logURL: logURL,
                 summaryURL: summaryURL,
                 arguments: ["--host", host ?? Host.current().localizedName!] + arguments,
@@ -692,47 +702,65 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
                 onSuccess: onSuccess?.hook,
                 onFailure: onFailure?.hook
             )
-            runner.backup(binary: binary, options: options) { [weak self] error in
+            return nil
+        }
+
+        if let immediateError {
+            completion(immediateError)
+            return
+        }
+
+        guard let options else {
+            completion(BackupError.preparationInProcess)
+            return
+        }
+
+        runner.backup(binary: binary, options: options) { [weak self] error in
+            DispatchQueue.main.async { [weak self] in
                 guard let self else {
+                    completion(error)
                     return
                 }
 
-                lock.withLock {
-                    DispatchQueue.main.sync { [weak self] in
-                        guard let self else {
-                            return
-                        }
-
-                        if let error {
-                            localizedError = error.localizedDescription
-                            let content = UNMutableNotificationContent()
-                            content.title = "Backup Not Completed"
-                            content.body = "Restic Scheduler couldn’t complete the backup."
-                            content.userInfo[AppDelegate.NotificationUserInfoKey.localizedError.rawValue] = localizedError
-                            content.userInfo[AppDelegate.NotificationUserInfoKey.repository.rawValue] = repository
-                            content.categoryIdentifier = AppDelegate.NotificationCategoryIdentifier.backupFailure.rawValue
-                            AppDelegate.shared?.addNotification(content: content)
-                        } else {
-                            localizedError = nil
-                            let completedAt = Date()
-                            lastSuccessfulBackupDate = completedAt
-                            nextScheduledBackupDate = nextBackupDate(from: completedAt)
-                            if let nextScheduledBackupDate {
-                                backupTimer?.fireDate = nextScheduledBackupDate
-                            }
-                            let content = UNMutableNotificationContent()
-                            content.title = "Backup Completed"
-                            content.body = "Restic Scheduler finished backing up “\(formatRepository(repository))”."
-                            AppDelegate.shared?.addNotification(content: content)
-                        }
-                        status = .idle
-                        completion(error)
-                        if error == nil {
-                            DispatchQueue.main.async { [weak self] in
-                                self?.refreshRepositoryStats()
-                            }
+                let repository = self.repository
+                var localizedError: String?
+                var shouldRefreshRepositoryStats = false
+                self.lock.withLock {
+                    if let error {
+                        localizedError = error.localizedDescription
+                        self.localizedError = localizedError
+                    } else {
+                        localizedError = nil
+                        self.localizedError = nil
+                        let completedAt = Date()
+                        self.lastSuccessfulBackupDate = completedAt
+                        self.nextScheduledBackupDate = self.nextBackupDate(from: completedAt)
+                        if let nextScheduledBackupDate = self.nextScheduledBackupDate {
+                            self.backupTimer?.fireDate = nextScheduledBackupDate
                         }
                     }
+                    self.status = .idle
+                    shouldRefreshRepositoryStats = error == nil
+                }
+
+                if let localizedError {
+                    let content = UNMutableNotificationContent()
+                    content.title = "Backup Not Completed"
+                    content.body = "Restic Scheduler couldn’t complete the backup."
+                    content.userInfo[AppDelegate.NotificationUserInfoKey.localizedError.rawValue] = localizedError
+                    content.userInfo[AppDelegate.NotificationUserInfoKey.repository.rawValue] = repository
+                    content.categoryIdentifier = AppDelegate.NotificationCategoryIdentifier.backupFailure.rawValue
+                    AppDelegate.shared?.addNotification(content: content)
+                } else {
+                    let content = UNMutableNotificationContent()
+                    content.title = "Backup Completed"
+                    content.body = "Restic Scheduler finished backing up “\(formatRepository(repository))”."
+                    AppDelegate.shared?.addNotification(content: content)
+                }
+
+                completion(error)
+                if shouldRefreshRepositoryStats {
+                    self.refreshRepositoryStats()
                 }
             }
         }
@@ -752,8 +780,8 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
                     return
                 }
 
-                lock.withLock {
-                    DispatchQueue.main.sync {
+                DispatchQueue.main.async {
+                    self.lock.withLock {
                         if error != nil {
                             if self.status == .stopping {
                                 self.status = .idle
@@ -763,8 +791,8 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
                             self.status = .idle
                         }
                     }
+                    completion?(error)
                 }
-                completion?(error)
             }
         }
     }
@@ -775,15 +803,21 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
 
     func refreshRepositoryStats() {
         guard repository.hasPrefix(RepositoryType.s3.rawValue) else {
+            appendLogLine("Repository stats refresh skipped: repository is not S3")
             repositoryStats = nil
             repositoryStatsError = nil
             isUpdatingRepositoryStats = false
+            pendingRepositoryStatsRefresh = false
             return
         }
         guard !isUpdatingRepositoryStats else {
+            pendingRepositoryStatsRefresh = true
+            appendLogLine("Repository stats refresh queued: already running")
             return
         }
 
+        appendLogLine("Repository stats refresh started")
+        pendingRepositoryStatsRefresh = false
         isUpdatingRepositoryStats = true
         repositoryStatsError = nil
         runner.repositoryStats(binary: binary, repository: repository, environment: repositoryEnvironment, logURL: logURL) { [weak self] stats, error in
@@ -793,13 +827,29 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
                 }
 
                 self.isUpdatingRepositoryStats = false
+                let shouldRunPendingRefresh = self.pendingRepositoryStatsRefresh
+                self.pendingRepositoryStatsRefresh = false
                 if let stats {
                     self.repositoryStats = stats
                     self.repositoryStatsError = nil
+                    self.appendLogLine("Repository stats refresh finished: \(stats.fileCount) blobs, \(stats.snapshotCount) snapshots, \(stats.totalBytes) bytes")
                 } else {
                     self.repositoryStatsError = error?.localizedDescription ?? "Repository stats unavailable"
+                    self.appendLogLine("Repository stats refresh failed: \(self.repositoryStatsError!)")
+                }
+                if shouldRunPendingRefresh {
+                    self.appendLogLine("Repository stats refresh restarting for queued request")
+                    self.refreshRepositoryStats()
                 }
             }
+        }
+    }
+
+    private func appendLogLine(_ message: String) {
+        do {
+            try "\(Date().formatted(.rfc3164)) \(message)\n".append(to: logURL, encoding: .utf8)
+        } catch {
+            TypeLogger.function().warning("Couldn't write log: \(error.localizedDescription, privacy: .public)")
         }
     }
 

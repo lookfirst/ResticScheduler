@@ -50,14 +50,18 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         }
     }
 
-    func userNotificationCenter(_: UNUserNotificationCenter, willPresent _: UNNotification) async -> UNNotificationPresentationOptions {
-        [.banner, .list, .sound]
+    func userNotificationCenter(_: UNUserNotificationCenter, willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
+        TypeLogger.function().info("Presenting notification: \(notification.request.content.title, privacy: .public)")
+        return [.banner, .list, .sound]
     }
 
     func userNotificationCenter(_: UNUserNotificationCenter, didReceive notification: UNNotificationResponse) async {
         DispatchQueue.main.async {
             switch notification.actionIdentifier {
             case NotificationActionIdentifier.details.rawValue, UNNotificationDefaultActionIdentifier:
+                guard notification.notification.request.content.categoryIdentifier == NotificationCategoryIdentifier.backupFailure.rawValue else {
+                    return
+                }
                 guard let repository = notification.notification.request.content.userInfo[NotificationUserInfoKey.repository.rawValue] as? String else {
                     TypeLogger.function().warning("No repository name found in notification user info")
                     return
@@ -99,9 +103,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         return .terminateLater
     }
 
-    func addNotification(content: UNMutableNotificationContent) {
+    func addNotification(content: UNMutableNotificationContent, deliveryDelay: TimeInterval = 0) {
         content.sound = .default
-        content.interruptionLevel = .timeSensitive
+        content.interruptionLevel = .active
 
         notificationCenter!.requestAuthorization(options: Self.authorizationOptions) { granted, error in
             guard error == nil else {
@@ -113,12 +117,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
                 return
             }
 
-            let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+            let trigger = deliveryDelay > 0 ? UNTimeIntervalNotificationTrigger(timeInterval: deliveryDelay, repeats: false) : nil
+            let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: trigger)
             self.notificationCenter!.add(request, withCompletionHandler: { error in
                 guard error == nil else {
                     TypeLogger.function().warning("Couldn't add notification request: \(error!.localizedDescription, privacy: .public)")
                     return
                 }
+                TypeLogger.function().info("Queued notification: \(content.title, privacy: .public)")
             })
         }
     }

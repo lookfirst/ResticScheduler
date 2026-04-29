@@ -10,6 +10,24 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
         case idle, preparation, backup, finishing, pruning, stopping
     }
 
+    private enum Operation {
+        case backup, prune
+
+        var title: String {
+            switch self {
+            case .backup: "Backup"
+            case .prune: "Prune"
+            }
+        }
+
+        var cancellationAction: String {
+            switch self {
+            case .backup: "the backup of"
+            case .prune: "repository forget/prune for"
+            }
+        }
+    }
+
     private struct PermissionDeniedBackupFailureRecord: Codable {
         var count: Int
         var updatedAt: Date
@@ -565,6 +583,7 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
     private var staleBackupScheduler: NSBackgroundActivityScheduler?
     private var repositoryPruneScheduler: NSBackgroundActivityScheduler?
     private var currentBackupPermissionDeniedItems = Set<String>()
+    private var cancellationRequestedOperation: Operation?
     private var bag = Set<AnyCancellable>()
 
     private var smartBackupHomeDirectories: [String] {
@@ -649,6 +668,42 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
         }
 
         return homeDirectories
+    }
+
+    private func operation(for status: Status) -> Operation? {
+        switch status {
+        case .preparation, .backup, .finishing:
+            .backup
+        case .pruning:
+            .prune
+        case .stopping:
+            cancellationRequestedOperation
+        case .idle:
+            nil
+        }
+    }
+
+    private func addOperationNotification(title: String, body: String, categoryIdentifier: AppDelegate.NotificationCategoryIdentifier? = nil, userInfo: [AnyHashable: Any] = [:], deliveryDelay: TimeInterval = 0) {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.userInfo = userInfo
+        if let categoryIdentifier {
+            content.categoryIdentifier = categoryIdentifier.rawValue
+        }
+        AppDelegate.shared?.addNotification(content: content, deliveryDelay: deliveryDelay)
+    }
+
+    private func addOperationNotification(_ operation: Operation, state: String, body: String, deliveryDelay: TimeInterval = 0) {
+        addOperationNotification(title: "\(operation.title) \(state)", body: body, deliveryDelay: deliveryDelay)
+    }
+
+    private func addCancellationNotification(_ operation: Operation, state: String, repository: String? = nil) {
+        addOperationNotification(operation, state: state, body: "Restic Scheduler \(state == "Cancellation Failed" ? "couldn’t cancel" : "is cancelling") \(operation.cancellationAction) “\(formattedRepositoryName(repository))”.")
+    }
+
+    private func formattedRepositoryName(_ repository: String? = nil) -> String {
+        formatRepository(repository ?? self.repository)
     }
 
     init() {
@@ -749,10 +804,7 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
         totalFiles = 0
         errorCount = 0
         currentBackupPermissionDeniedItems.removeAll()
-        let startedContent = UNMutableNotificationContent()
-        startedContent.title = "Backup Started"
-        startedContent.body = "Restic Scheduler started backing up “\(formatRepository(repository))”."
-        AppDelegate.shared?.addNotification(content: startedContent)
+        addOperationNotification(.backup, state: "Started", body: "Restic Scheduler started backing up “\(formattedRepositoryName())”.", deliveryDelay: 1)
 
         let environment = repositoryEnvironment
 
@@ -822,18 +874,27 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
                 }
 
                 if let localizedError {
-                    let content = UNMutableNotificationContent()
-                    content.title = "Backup Not Completed"
-                    content.body = "Restic Scheduler couldn’t complete the backup."
-                    content.userInfo[AppDelegate.NotificationUserInfoKey.localizedError.rawValue] = localizedError
-                    content.userInfo[AppDelegate.NotificationUserInfoKey.repository.rawValue] = repository
-                    content.categoryIdentifier = AppDelegate.NotificationCategoryIdentifier.backupFailure.rawValue
-                    AppDelegate.shared?.addNotification(content: content)
+                    if self.cancellationRequestedOperation == .backup {
+                        self.addOperationNotification(.backup, state: "Cancelled", body: "Restic Scheduler cancelled the backup of “\(formatRepository(repository))”.")
+                        self.cancellationRequestedOperation = nil
+                    } else {
+                        self.addOperationNotification(
+                            title: "Backup Not Completed",
+                            body: "Restic Scheduler couldn’t complete the backup.",
+                            categoryIdentifier: .backupFailure,
+                            userInfo: [
+                                AppDelegate.NotificationUserInfoKey.localizedError.rawValue: localizedError,
+                                AppDelegate.NotificationUserInfoKey.repository.rawValue: repository,
+                            ]
+                        )
+                    }
                 } else {
-                    let content = UNMutableNotificationContent()
-                    content.title = "Backup Completed"
-                    content.body = "Restic Scheduler finished backing up “\(formatRepository(repository))”."
-                    AppDelegate.shared?.addNotification(content: content)
+                    if self.cancellationRequestedOperation == .backup {
+                        self.addOperationNotification(.backup, state: "Cancelled", body: "Restic Scheduler cancelled the backup of “\(formatRepository(repository))”.")
+                        self.cancellationRequestedOperation = nil
+                    } else {
+                        self.addOperationNotification(.backup, state: "Completed", body: "Restic Scheduler finished backing up “\(formatRepository(repository))”.")
+                    }
                 }
 
                 completion(error)
@@ -847,11 +908,13 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
     }
 
     func stop(completion: ((Error?) -> Void)? = nil) {
-        guard status != .idle, status != .stopping else {
+        guard status != .idle, status != .stopping, let operation = operation(for: status) else {
             completion?(nil)
             return
         }
 
+        cancellationRequestedOperation = operation
+        addCancellationNotification(operation, state: "Cancellation Requested")
         status = .stopping
         runner.stop { [weak self] error in
             guard let self else {
@@ -864,6 +927,8 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
                     if self.status == .stopping {
                         self.status = .idle
                     }
+                    self.addCancellationNotification(operation, state: "Cancellation Failed")
+                    self.cancellationRequestedOperation = nil
                     TypeLogger.function().error("\(error!.localizedDescription, privacy: .public)")
                 } else {
                     self.status = .idle
@@ -1097,6 +1162,7 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
 
         status = .pruning
         appendLogLine("Repository forget/prune scheduled after \(reason); latest backup was \(lastSuccessfulBackupDate.formatted(.rfc3164))")
+        addOperationNotification(.prune, state: "Started", body: "Restic Scheduler started repository forget/prune for “\(formattedRepositoryName(repository))”.", deliveryDelay: 1)
 
         runner.forgetPrune(binary: binary, repository: repository, environment: environment, logURL: logURL) { [weak self] error in
             DispatchQueue.main.async {
@@ -1114,9 +1180,21 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
                 if let error {
                     self.appendLogLine("Repository forget/prune failed: \(error.localizedDescription)")
                     TypeLogger.function().error("Repository forget/prune failed: \(error.localizedDescription, privacy: .public)")
+                    if self.cancellationRequestedOperation == .prune {
+                        self.addOperationNotification(.prune, state: "Cancelled", body: "Restic Scheduler cancelled repository forget/prune for “\(formatRepository(repository))”.")
+                        self.cancellationRequestedOperation = nil
+                    } else {
+                        self.addOperationNotification(.prune, state: "Not Completed", body: "Restic Scheduler couldn’t complete repository forget/prune for “\(formatRepository(repository))”.")
+                    }
                 } else {
                     self.appendLogLine("Repository forget/prune completed successfully")
                     TypeLogger.function().info("Repository forget/prune completed successfully")
+                    if self.cancellationRequestedOperation == .prune {
+                        self.addOperationNotification(.prune, state: "Cancelled", body: "Restic Scheduler cancelled repository forget/prune for “\(formatRepository(repository))”.")
+                        self.cancellationRequestedOperation = nil
+                    } else {
+                        self.addOperationNotification(.prune, state: "Completed", body: "Restic Scheduler completed repository forget/prune for “\(formatRepository(repository))”.")
+                    }
                 }
 
                 if shouldRefreshRepositoryStats {

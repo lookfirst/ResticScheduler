@@ -15,6 +15,32 @@ enum RepositoryType: String {
             true
         }
     }
+
+    static func type(for repository: String) -> RepositoryType {
+        switch true {
+        case repository.hasPrefix(RepositoryType.sftp.rawValue):
+            .sftp
+        case repository.hasPrefix(RepositoryType.rest.rawValue):
+            .rest
+        case repository.hasPrefix(RepositoryType.s3.rawValue):
+            .s3
+        default:
+            .local
+        }
+    }
+
+    static func address(for repository: String) -> String {
+        switch type(for: repository) {
+        case .sftp:
+            repository.droppingPrefix(RepositoryType.sftp.rawValue)
+        case .rest:
+            repository.droppingPrefix(RepositoryType.rest.rawValue)
+        case .s3:
+            repository.droppingPrefix(RepositoryType.s3.rawValue)
+        default:
+            repository
+        }
+    }
 }
 
 struct ResticSettingsView: View {
@@ -41,29 +67,26 @@ struct ResticSettingsView: View {
         VStack {
             Form {
                 let repositoryType = Binding<RepositoryType> {
-                    switch true {
-                    case repository.hasPrefix(RepositoryType.sftp.rawValue):
-                        .sftp
-                    case repository.hasPrefix(RepositoryType.rest.rawValue):
-                        .rest
-                    case repository.hasPrefix(RepositoryType.s3.rawValue):
-                        .s3
-                    default:
-                        .local
-                    }
+                    RepositoryType.type(for: repository)
                 } set: { newValue in
                     guard newValue != .browse else {
                         browseRepository = true
                         return
                     }
 
+                    let currentValue = RepositoryType.type(for: repository)
+                    guard newValue != currentValue else {
+                        return
+                    }
+
+                    let address = RepositoryType.address(for: repository)
                     switch newValue {
                     case .sftp:
-                        repository = RepositoryType.sftp.rawValue
+                        repository = RepositoryType.sftp.rawValue + address
                     case .rest:
-                        repository = RepositoryType.rest.rawValue
+                        repository = RepositoryType.rest.rawValue + address
                     case .s3:
-                        repository = RepositoryType.s3.rawValue
+                        repository = RepositoryType.s3.rawValue + address
                     default:
                         repository = ""
                     }
@@ -95,16 +118,7 @@ struct ResticSettingsView: View {
                 })
                 if repositoryType.wrappedValue.hasAddress {
                     let address = Binding<String> {
-                        switch true {
-                        case repository.hasPrefix(RepositoryType.sftp.rawValue):
-                            repository.droppingPrefix(RepositoryType.sftp.rawValue)
-                        case repository.hasPrefix(RepositoryType.rest.rawValue):
-                            repository.droppingPrefix(RepositoryType.rest.rawValue)
-                        case repository.hasPrefix(RepositoryType.s3.rawValue):
-                            repository.droppingPrefix(RepositoryType.s3.rawValue)
-                        default:
-                            repository
-                        }
+                        RepositoryType.address(for: repository)
                     } set: { newValue in
                         switch repositoryType.wrappedValue {
                         case .sftp:

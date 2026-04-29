@@ -814,7 +814,11 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
                 permissionDeniedItems.formUnion(self.currentBackupPermissionDeniedItems)
                 self.currentBackupPermissionDeniedItems.removeAll()
                 if error == nil {
+                    self.appendLogLine("Permission-denied backup failure tracking started: \(permissionDeniedItems.count) item\(permissionDeniedItems.count == 1 ? "" : "s") reported by completed backup")
                     self.updatePermissionDeniedExcludes(afterBackupPermissionDeniedItems: permissionDeniedItems)
+                    self.appendLogLine("Permission-denied backup failure tracking finished")
+                } else if !permissionDeniedItems.isEmpty {
+                    self.appendLogLine("Permission-denied backup failure tracking skipped after failed backup: \(permissionDeniedItems.count) item\(permissionDeniedItems.count == 1 ? "" : "s") reported")
                 }
 
                 if let localizedError {
@@ -935,23 +939,34 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
         let now = Date()
         let deniedItems = permissionDeniedItems
             .filter { !excludes.contains($0) }
+        let manuallyExcludedCount = permissionDeniedItems.count - deniedItems.count
+
+        appendLogLine("Permission-denied backup failure tracking processing: \(deniedItems.count) trackable item\(deniedItems.count == 1 ? "" : "s"), \(manuallyExcludedCount) already manually excluded, \(permissionDeniedBackupFailureRecords.count) existing record\(permissionDeniedBackupFailureRecords.count == 1 ? "" : "s")")
 
         var records = permissionDeniedBackupFailureRecords
+        var removedRecordsCount = 0
         for (path, record) in records where record.count < Self.permissionDeniedAutoExcludeThreshold && !deniedItems.contains(path) {
             records.removeValue(forKey: path)
+            removedRecordsCount += 1
             appendLogLine("Removed permission-denied backup failure tracking after a completed backup without the error: \(path) (previous count: \(record.count))")
         }
 
         var newAutomaticExcludes = [String]()
+        var startedRecordsCount = 0
+        var updatedRecordsCount = 0
+        var refreshedRecordsCount = 0
         for path in deniedItems {
             let previousCount = records[path]?.count ?? 0
             let count = min(previousCount + 1, Self.permissionDeniedAutoExcludeThreshold)
             records[path] = PermissionDeniedBackupFailureRecord(count: count, updatedAt: now)
             if previousCount == 0 {
+                startedRecordsCount += 1
                 appendLogLine("Started permission-denied backup failure tracking: \(path) (count: \(count)/\(Self.permissionDeniedAutoExcludeThreshold))")
             } else if count != previousCount {
+                updatedRecordsCount += 1
                 appendLogLine("Updated permission-denied backup failure tracking: \(path) (count: \(previousCount) -> \(count)/\(Self.permissionDeniedAutoExcludeThreshold))")
             } else {
+                refreshedRecordsCount += 1
                 appendLogLine("Refreshed permission-denied automatic exclude tracking: \(path) (count: \(count)/\(Self.permissionDeniedAutoExcludeThreshold))")
             }
             if previousCount < Self.permissionDeniedAutoExcludeThreshold, count >= Self.permissionDeniedAutoExcludeThreshold {
@@ -966,6 +981,7 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
         }
 
         permissionDeniedBackupFailureRecords = records
+        appendLogLine("Permission-denied backup failure tracking saved: \(records.count) record\(records.count == 1 ? "" : "s") total, \(startedRecordsCount) started, \(updatedRecordsCount) updated, \(refreshedRecordsCount) refreshed, \(removedRecordsCount) removed")
         agePermissionDeniedAutoExcludesIfNeeded()
     }
 

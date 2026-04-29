@@ -755,6 +755,11 @@
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = "${MARKETING_VERSION}";
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-framework",
+					AppIntents,
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = "$(FULL_APP_BUNDLE_ID)";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -785,6 +790,11 @@
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = "${MARKETING_VERSION}";
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-framework",
+					AppIntents,
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = "$(FULL_APP_BUNDLE_ID)";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;

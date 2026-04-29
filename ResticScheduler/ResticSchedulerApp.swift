@@ -261,7 +261,7 @@ private struct ResticSchedulerMenu: View {
             }
             Divider()
             if localizedError != nil {
-                Button("Backup Failed…", action: showError)
+                Button("Backup Issues…", action: showError)
             }
             Button(actionLabel) {
                 if resticScheduler.status == .idle {

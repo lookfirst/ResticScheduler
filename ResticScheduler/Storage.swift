@@ -35,6 +35,9 @@ extension UserDefaultValues {
     @UserDefaultEntry("LastSuccessfulBackupDate")
     var lastSuccessfulBackupDate: Date? = nil
 
+    @UserDefaultEntry("LastSuccessfulPruneDate")
+    var lastSuccessfulPruneDate: Date? = nil
+
     @UserDefaultEntry("NextScheduledBackupDate")
     var nextScheduledBackupDate: Date? = nil
 

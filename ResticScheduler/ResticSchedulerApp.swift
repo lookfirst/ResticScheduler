@@ -39,12 +39,14 @@ private struct ResticSchedulerMenu: View {
     @UserDefault(\.repository) private var repository
     @UserDefault(\.backupFrequency) private var backupFrequency
     @UserDefault(\.lastSuccessfulBackupDate) private var lastSuccessfulBackupDate
+    @UserDefault(\.lastSuccessfulPruneDate) private var lastSuccessfulPruneDate
     @UserDefault(\.nextScheduledBackupDate) private var nextScheduledBackupDate
     @UserDefault(\.localizedError) private var localizedError
 
     private var actionLabel: String {
         switch resticScheduler.status {
         case .stopping: lastSuccessfulBackupDate == nil ? "Stopping…" : "Skipping…"
+        case .pruning: "Pruning…"
         case .idle: "Back Up Now"
         default: lastSuccessfulBackupDate == nil ? "Stop This Backup" : "Skip This Backup"
         }
@@ -60,6 +62,14 @@ private struct ResticSchedulerMenu: View {
         }
 
         return formatBackupDate(nextScheduledBackupDate)
+    }
+
+    private var lastPrune: String {
+        guard let lastSuccessfulPruneDate else {
+            return "Never"
+        }
+
+        return formatBackupDate(lastSuccessfulPruneDate)
     }
 
     private var backupBytesProgress: String {
@@ -218,6 +228,8 @@ private struct ResticSchedulerMenu: View {
                         Text("Next Backup")
                         Text(nextBackup)
                     }
+                    Text("Last Prune")
+                    Text(lastPrune)
                     if isS3Repository {
                         Divider()
                         Text("Repository Storage")
@@ -263,7 +275,17 @@ private struct ResticSchedulerMenu: View {
                     resticScheduler.stop()
                 }
             }
-            .disabled(resticScheduler.status == .stopping)
+            .disabled(resticScheduler.status == .stopping || resticScheduler.status == .pruning)
+            if resticScheduler.status != .pruning {
+                Button("Prune Now") {
+                    resticScheduler.runRepositoryPruneIfNeeded(reason: "manual request", ignoringRateLimit: true) { didStart in
+                        if !didStart {
+                            TypeLogger.function().info("Skipped manual prune request")
+                        }
+                    }
+                }
+                .disabled(resticScheduler.status != .idle)
+            }
             Button("View Restic Logs…", action: showLogs)
             Divider()
             Button("Settings…") {

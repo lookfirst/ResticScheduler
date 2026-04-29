@@ -83,16 +83,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDele
         }
 
         isTerminating = true
-        TypeLogger.function().info("Application is quitting; stopping running backup before termination")
+        TypeLogger.function().info("Application is quitting; stopping running restic process before termination")
         do {
-            try "\(Date().formatted(.rfc3164)) Application is quitting; stopping running backup...\n"
+            try "\(Date().formatted(.rfc3164)) Application is quitting; stopping running restic process...\n"
                 .append(to: resticScheduler.logURL, encoding: .utf8)
         } catch {
             TypeLogger.function().warning("Couldn't write shutdown notice to restic log: \(error.localizedDescription, privacy: .public)")
         }
         resticScheduler.stop { error in
             if let error {
-                TypeLogger.function().error("Backup stop during application termination failed: \(error.localizedDescription, privacy: .public)")
+                TypeLogger.function().error("Restic process stop during application termination failed: \(error.localizedDescription, privacy: .public)")
             }
             NSApp.reply(toApplicationShouldTerminate: true)
         }

@@ -6,7 +6,7 @@ class ResticRunnerService: ResticRunnerProtocol {
     private typealias TypeLogger = ResticSchedulerKit.TypeLogger<ResticRunnerService>
 
     private enum Status {
-        case preparation, backup, idle
+        case preparation, backup, pruning, idle
     }
 
     private struct Message: Decodable {
@@ -398,8 +398,186 @@ class ResticRunnerService: ResticRunnerProtocol {
         }
     }
 
+    func forgetPrune(binary: String?, repository: String, environment: [String: String], logURL: URL, reply: @escaping (Error?) -> Void) {
+        let idle = Self.status.withLock { value in
+            if value != .idle {
+                reply(value == .preparation ? BackupError.preparationInProcess : BackupError.backupInProcess)
+                return false
+            }
+
+            value = .pruning
+            return true
+        }
+        if !idle {
+            return
+        }
+
+        DispatchQueue.global(qos: .utility).async {
+            defer { Self.status.withLock { value in value = .idle } }
+            guard let executableURL = resticURL(forBinary: binary) else {
+                reply(ProcessError.missingRestic)
+                return
+            }
+
+            let arguments = [
+                "forget",
+                "--keep-within-hourly", "48h",
+                "--keep-within-daily", "30d",
+                "--keep-within-weekly", "6m",
+                "--keep-within-monthly", "2y",
+                "--prune",
+            ]
+            let unlockArguments = ["unlock"]
+            let processEnvironment = ProcessInfo.processInfo.environment
+                .merging(environment) { _, new in new }
+                .merging(["RESTIC_REPOSITORY": repository]) { _, new in new }
+            let startedAt = Date()
+
+            do {
+                try FileManager.default.createDirectory(at: logURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try "\(startedAt.formatted(.rfc3164)) Starting repository forget/prune...\n".append(to: logURL, encoding: .utf8)
+                try "\(Self.logPadding)repository forget/prune command: \(Self.commandString(executableURL: executableURL, arguments: arguments))\n".append(to: logURL, encoding: .utf8)
+                try "\(Self.logPadding)repository forget/prune repository: \(repository)\n".append(to: logURL, encoding: .utf8)
+            } catch {
+                TypeLogger.function().warning("Couldn't write repository forget/prune log: \(error.localizedDescription, privacy: .public)")
+            }
+
+            do {
+                var result = try Self.runResticProcess(executableURL: executableURL, arguments: arguments, environment: processEnvironment)
+                Self.writeRepositoryForgetPruneOutputLog(name: "stdout", output: result.standardOutput, to: logURL)
+                Self.writeRepositoryForgetPruneOutputLog(name: "stderr", output: result.standardError, to: logURL)
+
+                if result.terminationStatus == 11 {
+                    try "\(Self.logPadding)repository forget/prune found a repository lock; running unlock for stale locks\n".append(to: logURL, encoding: .utf8)
+                    try "\(Self.logPadding)repository unlock command: \(Self.commandString(executableURL: executableURL, arguments: unlockArguments))\n".append(to: logURL, encoding: .utf8)
+                    let unlockResult = try Self.runResticProcess(executableURL: executableURL, arguments: unlockArguments, environment: processEnvironment)
+                    Self.writeRepositoryForgetPruneOutputLog(name: "unlock stdout", output: unlockResult.standardOutput, to: logURL)
+                    Self.writeRepositoryForgetPruneOutputLog(name: "unlock stderr", output: unlockResult.standardError, to: logURL)
+                    if unlockResult.terminationStatus == 0 {
+                        try "\(Self.logPadding)repository unlock succeeded; retrying forget/prune once\n".append(to: logURL, encoding: .utf8)
+                        try "\(Self.logPadding)repository forget/prune retry command: \(Self.commandString(executableURL: executableURL, arguments: arguments))\n".append(to: logURL, encoding: .utf8)
+                        result = try Self.runResticProcess(executableURL: executableURL, arguments: arguments, environment: processEnvironment)
+                        Self.writeRepositoryForgetPruneOutputLog(name: "retry stdout", output: result.standardOutput, to: logURL)
+                        Self.writeRepositoryForgetPruneOutputLog(name: "retry stderr", output: result.standardError, to: logURL)
+                    } else {
+                        result = unlockResult
+                    }
+                }
+
+                let finishedAt = Date()
+                let duration = Self.formattedDuration(from: startedAt, to: finishedAt)
+                if result.terminationStatus == 0 {
+                    try "\(finishedAt.formatted(.rfc3164)) Finished repository forget/prune in \(duration)\n\n".append(to: logURL, encoding: .utf8)
+                    reply(nil)
+                } else {
+                    let error = ProcessError.abnormalTermination(terminationStatus: result.terminationStatus, standardError: result.standardError)
+                    TypeLogger.function().error("\(error.localizedDescription, privacy: .public)")
+                    try "\(finishedAt.formatted(.rfc3164)) Repository forget/prune failed after \(duration): \(error.localizedDescription)\n\n".append(to: logURL, encoding: .utf8)
+                    reply(error)
+                }
+            } catch {
+                TypeLogger.function().error("\(error.localizedDescription, privacy: .public)")
+                do {
+                    let finishedAt = Date()
+                    try "\(finishedAt.formatted(.rfc3164)) Repository forget/prune failed after \(Self.formattedDuration(from: startedAt, to: finishedAt)): \(error.localizedDescription)\n\n".append(to: logURL, encoding: .utf8)
+                } catch {
+                    TypeLogger.function().warning("Couldn't write repository forget/prune failure log: \(error.localizedDescription, privacy: .public)")
+                }
+                reply(error)
+            }
+        }
+    }
+
+    private struct ProcessResult {
+        let terminationStatus: Int32
+        let standardOutput: String
+        let standardError: String
+    }
+
+    private static func runResticProcess(executableURL: URL, arguments: [String], environment: [String: String]) throws -> ProcessResult {
+        let process = Process()
+        process.qualityOfService = .utility
+        process.executableURL = executableURL
+        process.arguments = arguments
+        process.environment = environment
+
+        let standardOutput = Pipe()
+        let standardError = Pipe()
+        process.standardOutput = standardOutput
+        process.standardError = standardError
+        let outputLock = NSLock()
+        var outputData = Data()
+        var errorData = Data()
+        standardOutput.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            guard !data.isEmpty else {
+                handle.readabilityHandler = nil
+                return
+            }
+
+            outputLock.withLock {
+                outputData.append(data)
+            }
+        }
+        standardError.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            guard !data.isEmpty else {
+                handle.readabilityHandler = nil
+                return
+            }
+
+            outputLock.withLock {
+                errorData.append(data)
+            }
+        }
+
+        try process.run()
+        Self.process.withLock { value in value = process }
+        defer {
+            standardOutput.fileHandleForReading.readabilityHandler = nil
+            standardError.fileHandleForReading.readabilityHandler = nil
+            Self.process.withLock { value in
+                if value === process {
+                    value = nil
+                }
+            }
+        }
+        process.waitUntilExit()
+        outputLock.withLock {
+            outputData.append(standardOutput.fileHandleForReading.readDataToEndOfFile())
+            errorData.append(standardError.fileHandleForReading.readDataToEndOfFile())
+        }
+        return ProcessResult(
+            terminationStatus: process.terminationStatus,
+            standardOutput: String(decoding: outputData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines),
+            standardError: String(decoding: errorData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+    }
+
     private static func shellQuoted(_ value: String) -> String {
         "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
+    }
+
+    private static func commandString(executableURL: URL, arguments: [String]) -> String {
+        ([executableURL.path] + arguments)
+            .map(shellQuoted)
+            .joined(separator: " ")
+    }
+
+    private static func writeRepositoryForgetPruneOutputLog(name: String, output: String, to logURL: URL) {
+        if output.isEmpty {
+            writeRepositoryForgetPruneLog("repository forget/prune \(name): <empty>\n", to: logURL)
+        } else {
+            writeRepositoryForgetPruneLog("repository forget/prune \(name):\n\(output.prefixingLines(with: "\(logPadding)  "))", to: logURL)
+        }
+    }
+
+    private static func writeRepositoryForgetPruneLog(_ value: String, to logURL: URL) {
+        do {
+            try "\(logPadding)\(value)".append(to: logURL, encoding: .utf8)
+        } catch {
+            TypeLogger.function().warning("Couldn't write repository forget/prune log: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     private static func writeRepositoryStatsOutputLog(name: String, output: String, to logURL: URL) {

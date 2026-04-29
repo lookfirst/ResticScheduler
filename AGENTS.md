@@ -30,6 +30,8 @@ For concise verification output, pipe through ripgrep:
 xcodebuild -scheme 'Restic Scheduler' -configuration Release -destination 'platform=macOS' build 2>&1 | rg -n -C 3 "error:|warning:|BUILD SUCCEEDED|BUILD FAILED"
 ```
 
+Use the standard build command or the exact concise verification command above for compile checks. Do not invent one-off Xcode build filter variants unless the user explicitly asks; they can trigger unnecessary approval prompts.
+
 The expected release build product path in this checkout is:
 
 ```sh

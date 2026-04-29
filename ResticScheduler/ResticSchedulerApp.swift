@@ -47,7 +47,7 @@ private struct ResticSchedulerMenu: View {
         switch resticScheduler.status {
         case .stopping: lastSuccessfulBackupDate == nil ? "Stopping…" : "Skipping…"
         case .pruning: "Pruning…"
-        case .idle: "Back Up Now"
+        case .idle: "Backup Now"
         default: lastSuccessfulBackupDate == nil ? "Stop This Backup" : "Skip This Backup"
         }
     }
@@ -238,6 +238,7 @@ private struct ResticSchedulerMenu: View {
                             Text(repositoryStorageFiles)
                             Text(repositoryStorageSize)
                             if let repositoryStorageCosts {
+                                Divider()
                                 Text("Estimated B2 Storage Cost")
                                     .help(Self.b2StorageCostHelp)
                                 Text(repositoryStorageCosts.day)
@@ -254,14 +255,14 @@ private struct ResticSchedulerMenu: View {
                                 .help(resticScheduler.repositoryStatsError ?? "")
                         }
                     }
-                    if localizedError != nil {
-                        Button("Backup Failed…", action: showError)
-                    }
                 } else {
                     Text("Waiting to Complete First Backup")
                 }
             }
             Divider()
+            if localizedError != nil {
+                Button("Backup Failed…", action: showError)
+            }
             Button(actionLabel) {
                 if resticScheduler.status == .idle {
                     resticScheduler.backup { error in

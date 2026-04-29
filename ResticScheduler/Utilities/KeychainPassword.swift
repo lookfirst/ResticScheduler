@@ -3,7 +3,7 @@ import os
 import ResticSchedulerKit
 import SwiftUI
 
-protocol DataRepresentable {
+protocol DataRepresentable: Sendable {
     init?(data: Data)
 
     func data() -> Data?
@@ -37,7 +37,7 @@ extension String?: DataRepresentable {
     }
 }
 
-protocol KeychainPasswordKey {
+protocol KeychainPasswordKey: Sendable {
     associatedtype Value: DataRepresentable
 
     static var label: String { get }

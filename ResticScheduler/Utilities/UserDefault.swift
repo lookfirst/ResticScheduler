@@ -8,7 +8,7 @@ protocol UserDefaultObjectRepresentable {
     func userDefaultObject() -> Any?
 }
 
-protocol UserDefaultKey {
+protocol UserDefaultKey: Sendable {
     associatedtype Value
 
     static var key: String { get }

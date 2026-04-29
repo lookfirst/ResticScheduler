@@ -35,9 +35,9 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
             activateRemoteObjectProxyWithErrorHandler { error in replyOnce(error) }?.forgetPrune(binary: binary, repository: repository, environment: environment, logURL: logURL, reply: replyOnce)
         }
 
-        func backup(binary: String?, options: BackupOptions, reply: @escaping (Error?) -> Void) {
+        func backup(binary: String?, options: BackupOptions, reply: @escaping (Error?, [String]) -> Void) {
             let replyOnce = withCallingReplyOnce(reply)
-            activateRemoteObjectProxyWithErrorHandler(exporting: ResticSchedulerProtocol.self, via: scheduler!) { error in replyOnce(error) }?.backup(binary: binary, options: options, reply: replyOnce)
+            activateRemoteObjectProxyWithErrorHandler(exporting: ResticSchedulerProtocol.self, via: scheduler!) { error in replyOnce(error, []) }?.backup(binary: binary, options: options, reply: replyOnce)
         }
 
         func stop(reply: @escaping (Error?) -> Void) {
@@ -561,7 +561,6 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
     @UserDefault(\.localizedError) private var localizedError
 
     private let runner = Runner()
-    private let lock = OSAllocatedUnfairLock()
     private var backupTimer: Timer?
     private var staleBackupScheduler: NSBackgroundActivityScheduler?
     private var repositoryPruneScheduler: NSBackgroundActivityScheduler?
@@ -694,19 +693,17 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
                 return
             }
 
-            self.lock.withLock {
-                if self.status == .preparation {
-                    self.status = .backup
-                }
-                self.percentDone = percentDone
-                self.bytesDone = bytesDone
-                self.totalBytes = totalBytes
-                self.secondsElapsed = secondsElapsed
-                self.secondsRemaining = secondsRemaining
-                self.filesDone = filesDone
-                self.totalFiles = totalFiles
-                self.errorCount = errorCount
+            if self.status == .preparation {
+                self.status = .backup
             }
+            self.percentDone = percentDone
+            self.bytesDone = bytesDone
+            self.totalBytes = totalBytes
+            self.secondsElapsed = secondsElapsed
+            self.secondsRemaining = secondsRemaining
+            self.filesDone = filesDone
+            self.totalFiles = totalFiles
+            self.errorCount = errorCount
         }
     }
 
@@ -716,10 +713,8 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
                 return
             }
 
-            self.lock.withLock {
-                if self.status == .backup {
-                    self.status = .finishing
-                }
+            if self.status == .backup {
+                self.status = .finishing
             }
         }
     }
@@ -733,75 +728,60 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
             let normalizedItems = items
                 .map(Self.normalizedPermissionDeniedPath)
                 .filter { !$0.isEmpty }
-            self.lock.withLock {
-                self.currentBackupPermissionDeniedItems.formUnion(normalizedItems)
-            }
+            self.currentBackupPermissionDeniedItems.formUnion(normalizedItems)
         }
     }
 
     func backup(completion: @escaping ((Error?) -> Void)) {
-        var options: BackupOptions?
         let binary = self.binary
-        let immediateError: Error? = lock.withLock {
-            guard status == .idle else {
-                return status == .preparation ? BackupError.preparationInProcess : BackupError.backupInProcess
-            }
-
-            status = .preparation
-            percentDone = 0
-            bytesDone = 0
-            totalBytes = 0
-            secondsElapsed = 0
-            secondsRemaining = 0
-            filesDone = 0
-            totalFiles = 0
-            errorCount = 0
-            currentBackupPermissionDeniedItems.removeAll()
-            let startedContent = UNMutableNotificationContent()
-            startedContent.title = "Backup Started"
-            startedContent.body = "Restic Scheduler started backing up “\(formatRepository(repository))”."
-            AppDelegate.shared?.addNotification(content: startedContent)
-
-            let environment = repositoryEnvironment
-
-            let smartBackupHomeDirectories = self.smartBackupHomeDirectories
-            let effectiveIncludes = self.effectiveIncludes
-            let effectiveExcludes = self.effectiveExcludes(homeDirectories: smartBackupHomeDirectories)
-            TypeLogger.function().info("Starting backup with includes:")
-            for include in effectiveIncludes {
-                TypeLogger.function().info("include: \(include, privacy: .public)")
-            }
-            TypeLogger.function().info("Starting backup with excludes:")
-            for exclude in effectiveExcludes {
-                TypeLogger.function().info("exclude: \(exclude, privacy: .public)")
-            }
-
-            options = BackupOptions(
-                logURL: logURL,
-                summaryURL: summaryURL,
-                arguments: ["--host", host ?? Host.current().localizedName!] + arguments,
-                includes: effectiveIncludes,
-                excludes: effectiveExcludes,
-                smartBackupHomeDirectories: smartBackupHomeDirectories,
-                environment: environment,
-                beforeBackup: beforeBackup?.hook,
-                onSuccess: onSuccess?.hook,
-                onFailure: onFailure?.hook
-            )
-            return nil
-        }
-
-        if let immediateError {
-            completion(immediateError)
+        guard status == .idle else {
+            completion(status == .preparation ? BackupError.preparationInProcess : BackupError.backupInProcess)
             return
         }
 
-        guard let options else {
-            completion(BackupError.preparationInProcess)
-            return
+        status = .preparation
+        percentDone = 0
+        bytesDone = 0
+        totalBytes = 0
+        secondsElapsed = 0
+        secondsRemaining = 0
+        filesDone = 0
+        totalFiles = 0
+        errorCount = 0
+        currentBackupPermissionDeniedItems.removeAll()
+        let startedContent = UNMutableNotificationContent()
+        startedContent.title = "Backup Started"
+        startedContent.body = "Restic Scheduler started backing up “\(formatRepository(repository))”."
+        AppDelegate.shared?.addNotification(content: startedContent)
+
+        let environment = repositoryEnvironment
+
+        let smartBackupHomeDirectories = self.smartBackupHomeDirectories
+        let effectiveIncludes = self.effectiveIncludes
+        let effectiveExcludes = self.effectiveExcludes(homeDirectories: smartBackupHomeDirectories)
+        TypeLogger.function().info("Starting backup with includes:")
+        for include in effectiveIncludes {
+            TypeLogger.function().info("include: \(include, privacy: .public)")
+        }
+        TypeLogger.function().info("Starting backup with excludes:")
+        for exclude in effectiveExcludes {
+            TypeLogger.function().info("exclude: \(exclude, privacy: .public)")
         }
 
-        runner.backup(binary: binary, options: options) { [weak self] error in
+        let options = BackupOptions(
+            logURL: logURL,
+            summaryURL: summaryURL,
+            arguments: ["--host", host ?? Host.current().localizedName!] + arguments,
+            includes: effectiveIncludes,
+            excludes: effectiveExcludes,
+            smartBackupHomeDirectories: smartBackupHomeDirectories,
+            environment: environment,
+            beforeBackup: beforeBackup?.hook,
+            onSuccess: onSuccess?.hook,
+            onFailure: onFailure?.hook
+        )
+
+        runner.backup(binary: binary, options: options) { [weak self] error, runnerPermissionDeniedItems in
             DispatchQueue.main.async { [weak self] in
                 guard let self else {
                     completion(error)
@@ -811,26 +791,28 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
                 let repository = self.repository
                 var localizedError: String?
                 var shouldRefreshRepositoryStats = false
-                var permissionDeniedItems = Set<String>()
-                self.lock.withLock {
-                    if let error {
-                        localizedError = error.localizedDescription
-                        self.localizedError = localizedError
-                    } else {
-                        localizedError = nil
-                        self.localizedError = nil
-                        let completedAt = Date()
-                        self.lastSuccessfulBackupDate = completedAt
-                        self.nextScheduledBackupDate = self.nextBackupDate(from: completedAt)
-                        if let nextScheduledBackupDate = self.nextScheduledBackupDate {
-                            self.backupTimer?.fireDate = nextScheduledBackupDate
-                        }
+                var permissionDeniedItems = Set(
+                    runnerPermissionDeniedItems
+                        .map(Self.normalizedPermissionDeniedPath)
+                        .filter { !$0.isEmpty }
+                )
+                if let error {
+                    localizedError = error.localizedDescription
+                    self.localizedError = localizedError
+                } else {
+                    localizedError = nil
+                    self.localizedError = nil
+                    let completedAt = Date()
+                    self.lastSuccessfulBackupDate = completedAt
+                    self.nextScheduledBackupDate = self.nextBackupDate(from: completedAt)
+                    if let nextScheduledBackupDate = self.nextScheduledBackupDate {
+                        self.backupTimer?.fireDate = nextScheduledBackupDate
                     }
-                    self.status = .idle
-                    shouldRefreshRepositoryStats = error == nil
-                    permissionDeniedItems = self.currentBackupPermissionDeniedItems
-                    self.currentBackupPermissionDeniedItems.removeAll()
                 }
+                self.status = .idle
+                shouldRefreshRepositoryStats = error == nil
+                permissionDeniedItems.formUnion(self.currentBackupPermissionDeniedItems)
+                self.currentBackupPermissionDeniedItems.removeAll()
                 if error == nil {
                     self.updatePermissionDeniedExcludes(afterBackupPermissionDeniedItems: permissionDeniedItems)
                 }
@@ -861,32 +843,28 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
     }
 
     func stop(completion: ((Error?) -> Void)? = nil) {
-        lock.withLock {
-            guard status != .idle, status != .stopping else {
-                completion?(nil)
+        guard status != .idle, status != .stopping else {
+            completion?(nil)
+            return
+        }
+
+        status = .stopping
+        runner.stop { [weak self] error in
+            guard let self else {
+                completion?(error)
                 return
             }
 
-            status = .stopping
-            runner.stop { [weak self] error in
-                guard let self else {
-                    completion?(error)
-                    return
-                }
-
-                DispatchQueue.main.async {
-                    self.lock.withLock {
-                        if error != nil {
-                            if self.status == .stopping {
-                                self.status = .idle
-                            }
-                            TypeLogger.function().error("\(error!.localizedDescription, privacy: .public)")
-                        } else {
-                            self.status = .idle
-                        }
+            DispatchQueue.main.async {
+                if error != nil {
+                    if self.status == .stopping {
+                        self.status = .idle
                     }
-                    completion?(error)
+                    TypeLogger.function().error("\(error!.localizedDescription, privacy: .public)")
+                } else {
+                    self.status = .idle
                 }
+                completion?(error)
             }
         }
     }
@@ -1082,33 +1060,26 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
         let repository = self.repository
         let environment = repositoryEnvironment
         let logURL = self.logURL
-        let shouldRun = lock.withLock {
-            guard status == .idle else {
-                appendLogLine("Repository forget/prune skipped: \(reason); scheduler is busy")
-                completion?(false)
-                return false
-            }
-            guard let lastSuccessfulBackupDate else {
-                appendLogLine("Repository forget/prune skipped: no successful backup yet")
-                completion?(false)
-                return false
-            }
-            guard ignoringRateLimit || Date().timeIntervalSince(lastSuccessfulPruneDate ?? .distantPast) >= Self.pruneInterval else {
-                if let lastSuccessfulPruneDate {
-                    appendLogLine("Repository forget/prune skipped: last successful prune was \(lastSuccessfulPruneDate.formatted(.rfc3164))")
-                }
-                completion?(false)
-                return false
-            }
-
-            status = .pruning
-            appendLogLine("Repository forget/prune scheduled after \(reason); latest backup was \(lastSuccessfulBackupDate.formatted(.rfc3164))")
-            return true
-        }
-
-        guard shouldRun else {
+        guard status == .idle else {
+            appendLogLine("Repository forget/prune skipped: \(reason); scheduler is busy")
+            completion?(false)
             return false
         }
+        guard let lastSuccessfulBackupDate else {
+            appendLogLine("Repository forget/prune skipped: no successful backup yet")
+            completion?(false)
+            return false
+        }
+        guard ignoringRateLimit || Date().timeIntervalSince(lastSuccessfulPruneDate ?? .distantPast) >= Self.pruneInterval else {
+            if let lastSuccessfulPruneDate {
+                appendLogLine("Repository forget/prune skipped: last successful prune was \(lastSuccessfulPruneDate.formatted(.rfc3164))")
+            }
+            completion?(false)
+            return false
+        }
+
+        status = .pruning
+        appendLogLine("Repository forget/prune scheduled after \(reason); latest backup was \(lastSuccessfulBackupDate.formatted(.rfc3164))")
 
         runner.forgetPrune(binary: binary, repository: repository, environment: environment, logURL: logURL) { [weak self] error in
             DispatchQueue.main.async {
@@ -1117,13 +1088,11 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
                 }
 
                 var shouldRefreshRepositoryStats = false
-                self.lock.withLock {
-                    if error == nil {
-                        self.lastSuccessfulPruneDate = Date()
-                        shouldRefreshRepositoryStats = true
-                    }
-                    self.status = .idle
+                if error == nil {
+                    self.lastSuccessfulPruneDate = Date()
+                    shouldRefreshRepositoryStats = true
                 }
+                self.status = .idle
 
                 if let error {
                     self.appendLogLine("Repository forget/prune failed: \(error.localizedDescription)")
@@ -1163,40 +1132,36 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
     }
 
     func rescheduleBackup() {
-        lock.withLock {
-            backupTimer?.invalidate()
-            backupTimer = nil
-            let interval = Duration.seconds(backupFrequency)
-            guard interval.components.seconds > 0 else {
-                return
-            }
-
-            let intervalSeconds = TimeInterval(interval.components.seconds)
-            if nextScheduledBackupDate == nil || nextScheduledBackupDate! <= Date() {
-                nextScheduledBackupDate = nextBackupDate(from: Date())
-            }
-            guard let nextScheduledBackupDate else {
-                return
-            }
-            let timer = Timer(timeInterval: intervalSeconds, repeats: false) { [weak self] _ in
-                self?.scheduledBackup()
-            }
-            timer.fireDate = max(nextScheduledBackupDate, Date())
-            backupTimer = timer
-            DispatchQueue.main.async {
-                guard timer.isValid else {
-                    return
-                }
-                RunLoop.main.add(timer, forMode: .common)
-            }
-            TypeLogger.function().info("Rescheduled backups, interval: \(interval.formatted(.units(allowed: [.days, .hours, .minutes, .seconds], width: .wide)), privacy: .public), next backup: \(timer.fireDate, privacy: .public)")
+        backupTimer?.invalidate()
+        backupTimer = nil
+        let interval = Duration.seconds(backupFrequency)
+        guard interval.components.seconds > 0 else {
+            return
         }
+
+        let intervalSeconds = TimeInterval(interval.components.seconds)
+        if nextScheduledBackupDate == nil || nextScheduledBackupDate! <= Date() {
+            nextScheduledBackupDate = nextBackupDate(from: Date())
+        }
+        guard let nextScheduledBackupDate else {
+            return
+        }
+        let timer = Timer(timeInterval: intervalSeconds, repeats: false) { [weak self] _ in
+            self?.scheduledBackup()
+        }
+        timer.fireDate = max(nextScheduledBackupDate, Date())
+        backupTimer = timer
+        DispatchQueue.main.async {
+            guard timer.isValid else {
+                return
+            }
+            RunLoop.main.add(timer, forMode: .common)
+        }
+        TypeLogger.function().info("Rescheduled backups, interval: \(interval.formatted(.units(allowed: [.days, .hours, .minutes, .seconds], width: .wide)), privacy: .public), next backup: \(timer.fireDate, privacy: .public)")
     }
 
     func backupFrequencyDidChange() {
-        lock.withLock {
-            nextScheduledBackupDate = nextBackupDate(from: Date())
-        }
+        nextScheduledBackupDate = nextBackupDate(from: Date())
         rescheduleBackup()
         rescheduleStaleBackupCheck()
     }
@@ -1219,24 +1184,17 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
     }
 
     private func scheduledBackup() {
-        let shouldRun = lock.withLock {
-            guard status == .idle else {
-                if status == .pruning {
-                    deferNextBackupByOneHour()
-                } else {
-                    nextScheduledBackupDate = nextBackupDate(from: Date())
-                }
-                if let nextScheduledBackupDate {
-                    TypeLogger.function().info("Skipped scheduled backup because Restic Scheduler is busy, next backup: \(nextScheduledBackupDate, privacy: .public)")
-                } else {
-                    TypeLogger.function().info("Skipped scheduled backup because Restic Scheduler is busy")
-                }
-                return false
+        guard status == .idle else {
+            if status == .pruning {
+                deferNextBackupByOneHour()
+            } else {
+                nextScheduledBackupDate = nextBackupDate(from: Date())
             }
-            return true
-        }
-
-        guard shouldRun else {
+            if let nextScheduledBackupDate {
+                TypeLogger.function().info("Skipped scheduled backup because Restic Scheduler is busy, next backup: \(nextScheduledBackupDate, privacy: .public)")
+            } else {
+                TypeLogger.function().info("Skipped scheduled backup because Restic Scheduler is busy")
+            }
             rescheduleBackup()
             return
         }
@@ -1244,9 +1202,7 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
         backup { error in
             if let error {
                 TypeLogger.function().error("Failed to run scheduled backup: \(error.localizedDescription, privacy: .public)")
-                self.lock.withLock {
-                    self.nextScheduledBackupDate = self.nextBackupDate(from: Date())
-                }
+                self.nextScheduledBackupDate = self.nextBackupDate(from: Date())
             } else {
                 TypeLogger.function().info("Finished scheduled backup")
             }
@@ -1256,32 +1212,30 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
 
     private func reconcileBackupSchedule(reason: String) {
         var shouldReschedule = false
-        lock.withLock {
-            let interval = Duration.seconds(backupFrequency)
-            guard interval.components.seconds > 0 else {
-                return
-            }
+        let interval = Duration.seconds(backupFrequency)
+        guard interval.components.seconds > 0 else {
+            return
+        }
 
-            guard let scheduledDate = nextScheduledBackupDate else {
-                nextScheduledBackupDate = nextBackupDate(from: Date())
-                shouldReschedule = true
-                return
-            }
-            guard scheduledDate <= Date() else {
-                return
-            }
+        guard let scheduledDate = nextScheduledBackupDate else {
+            nextScheduledBackupDate = nextBackupDate(from: Date())
+            shouldReschedule = true
+            return
+        }
+        guard scheduledDate <= Date() else {
+            return
+        }
 
-            switch status {
-            case .idle:
-                nextScheduledBackupDate = nextBackupDate(from: Date())
-                appendLogLine("Scheduled backup was overdue after \(reason); waiting until next scheduled backup: \(nextScheduledBackupDate?.formatted(.rfc3164) ?? "none"). Original next backup: \(scheduledDate.formatted(.rfc3164))")
-                shouldReschedule = true
-            case .pruning:
-                deferNextBackupByOneHour()
-                shouldReschedule = true
-            default:
-                appendLogLine("Scheduled backup overdue after \(reason), but scheduler is busy. Original next backup: \(scheduledDate.formatted(.rfc3164))")
-            }
+        switch status {
+        case .idle:
+            nextScheduledBackupDate = nextBackupDate(from: Date())
+            appendLogLine("Scheduled backup was overdue after \(reason); waiting until next scheduled backup: \(nextScheduledBackupDate?.formatted(.rfc3164) ?? "none"). Original next backup: \(scheduledDate.formatted(.rfc3164))")
+            shouldReschedule = true
+        case .pruning:
+            deferNextBackupByOneHour()
+            shouldReschedule = true
+        default:
+            appendLogLine("Scheduled backup overdue after \(reason), but scheduler is busy. Original next backup: \(scheduledDate.formatted(.rfc3164))")
         }
 
         if shouldReschedule {
@@ -1297,70 +1251,77 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
     }
 
     func rescheduleRepositoryPruneCheck() {
-        lock.withLock {
-            repositoryPruneScheduler?.invalidate()
-            repositoryPruneScheduler = NSBackgroundActivityScheduler(identifier: "\(Bundle.main.bundleIdentifier!).repositoryPruneCheck")
-            repositoryPruneScheduler!.qualityOfService = .utility
-            repositoryPruneScheduler!.interval = Self.repositoryPruneCheckInterval
-            repositoryPruneScheduler!.schedule { [weak self] completion in
-                guard let self, let scheduler = repositoryPruneScheduler else {
-                    completion(.deferred)
-                    return
-                }
-                guard !scheduler.shouldDefer else {
-                    TypeLogger.function().info("Deferred repository forget/prune check as suggested")
-                    completion(.deferred)
-                    return
-                }
-
-                DispatchQueue.main.async {
-                    self.runRepositoryPruneIfNeeded(reason: "maintenance schedule") { _ in
-                        completion(.finished)
-                    }
-                }
+        repositoryPruneScheduler?.invalidate()
+        let scheduler = NSBackgroundActivityScheduler(identifier: "\(Bundle.main.bundleIdentifier!).repositoryPruneCheck")
+        scheduler.qualityOfService = .utility
+        scheduler.interval = Self.repositoryPruneCheckInterval
+        repositoryPruneScheduler = scheduler
+        scheduler.schedule { [weak self, weak scheduler] completion in
+            guard let scheduler else {
+                completion(.deferred)
+                return
             }
-            TypeLogger.function().info("Rescheduled repository forget/prune check, interval: \(Duration.seconds(Int64(Self.repositoryPruneCheckInterval)).formatted(.units(allowed: [.days, .hours, .minutes, .seconds], width: .wide)), privacy: .public)")
-        }
-    }
-
-    func rescheduleStaleBackupCheck() {
-        lock.withLock {
-            staleBackupScheduler?.invalidate()
-            let interval = Duration.seconds(backupFrequency)
-            guard interval.components.seconds > 0 else {
+            guard !scheduler.shouldDefer else {
+                TypeLogger.function().info("Deferred repository forget/prune check as suggested")
+                completion(.deferred)
                 return
             }
 
-            staleBackupScheduler = NSBackgroundActivityScheduler(identifier: "\(Bundle.main.bundleIdentifier!).staleBackupCheck")
-            staleBackupScheduler!.qualityOfService = .background
-            let staleCheckInterval = min(max(Self.minStaleBackupCheckInterval, interval.components.seconds / 2), Self.maxStaleBackupCheckInterval)
-            staleBackupScheduler!.interval = TimeInterval(staleCheckInterval)
-            staleBackupScheduler!.schedule { [weak self] completion in
-                guard let self, let scheduler = staleBackupScheduler else {
+            DispatchQueue.main.async {
+                guard let self else {
                     completion(.deferred)
                     return
                 }
-                guard !scheduler.shouldDefer else {
-                    TypeLogger.function().info("Deferred stale backup check as suggested")
+
+                self.runRepositoryPruneIfNeeded(reason: "maintenance schedule") { _ in
+                    completion(.finished)
+                }
+            }
+        }
+        TypeLogger.function().info("Rescheduled repository forget/prune check, interval: \(Duration.seconds(Int64(Self.repositoryPruneCheckInterval)).formatted(.units(allowed: [.days, .hours, .minutes, .seconds], width: .wide)), privacy: .public)")
+    }
+
+    func rescheduleStaleBackupCheck() {
+        staleBackupScheduler?.invalidate()
+        let interval = Duration.seconds(backupFrequency)
+        guard interval.components.seconds > 0 else {
+            return
+        }
+
+        let scheduler = NSBackgroundActivityScheduler(identifier: "\(Bundle.main.bundleIdentifier!).staleBackupCheck")
+        scheduler.qualityOfService = .background
+        let staleCheckInterval = min(max(Self.minStaleBackupCheckInterval, interval.components.seconds / 2), Self.maxStaleBackupCheckInterval)
+        scheduler.interval = TimeInterval(staleCheckInterval)
+        staleBackupScheduler = scheduler
+        scheduler.schedule { [weak self, weak scheduler] completion in
+            guard let scheduler else {
+                completion(.deferred)
+                return
+            }
+            guard !scheduler.shouldDefer else {
+                TypeLogger.function().info("Deferred stale backup check as suggested")
+                completion(.deferred)
+                return
+            }
+
+            DispatchQueue.main.async {
+                guard let self else {
                     completion(.deferred)
                     return
                 }
-                guard isBackupStale else {
+                guard self.isBackupStale else {
                     completion(.finished)
                     return
                 }
 
-                DispatchQueue.main.async {
-                    self.lock.withLock {
-                        self.nextScheduledBackupDate = self.nextBackupDate(from: Date())
-                    }
-                    self.appendLogLine("Backup is stale; waiting until next scheduled backup")
-                    self.rescheduleBackup()
-                    completion(.finished)
-                }
+                self.nextScheduledBackupDate = self.nextBackupDate(from: Date())
+                self.appendLogLine("Backup is stale; waiting until next scheduled backup")
+                self.rescheduleBackup()
+                completion(.finished)
             }
-            TypeLogger.function().info("Rescheduled stale backup check, interval: \(Duration.seconds(staleCheckInterval).formatted(.units(allowed: [.days, .hours, .minutes, .seconds], width: .wide)), privacy: .public), stale: \(self.isBackupStale, privacy: .public)")
         }
+        let stale = isBackupStale
+        TypeLogger.function().info("Rescheduled stale backup check, interval: \(Duration.seconds(staleCheckInterval).formatted(.units(allowed: [.days, .hours, .minutes, .seconds], width: .wide)), privacy: .public), stale: \(stale, privacy: .public)")
     }
 }
 

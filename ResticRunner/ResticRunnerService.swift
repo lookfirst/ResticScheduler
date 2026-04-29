@@ -619,10 +619,10 @@ class ResticRunnerService: ResticRunnerProtocol {
         }
     }
 
-    func backup(binary: String?, options: BackupOptions, reply: @escaping (Error?) -> Void) {
+    func backup(binary: String?, options: BackupOptions, reply: @escaping (Error?, [String]) -> Void) {
         let idle = Self.status.withLock { value in
             if value != .idle {
-                reply(value == .preparation ? BackupError.preparationInProcess : BackupError.backupInProcess)
+                reply(value == .preparation ? BackupError.preparationInProcess : BackupError.backupInProcess, [])
                 return false
             }
 
@@ -644,7 +644,7 @@ class ResticRunnerService: ResticRunnerProtocol {
         let process = Process()
         process.qualityOfService = .background
         guard let executableURL = resticURL(forBinary: binary) else {
-            reply(ProcessError.missingRestic)
+            reply(ProcessError.missingRestic, [])
             return
         }
 
@@ -698,6 +698,7 @@ class ResticRunnerService: ResticRunnerProtocol {
             var summary: String?
             var activeDuration: TimeInterval?
             var standardOutputBuffer = Data()
+            var standardErrorBuffer = Data()
             var didLogJSONStreamStart = false
             let permissionDeniedItems = OSAllocatedUnfairLock<Set<String>>(initialState: [])
             let decoder = JSONDecoder()
@@ -712,6 +713,27 @@ class ResticRunnerService: ResticRunnerProtocol {
                     try "\(Self.logPadding)restic JSON: \(line)\n".append(to: options.logURL, encoding: .utf8)
                 } catch {
                     TypeLogger.function().warning("Couldn't write restic JSON log: \(error.localizedDescription, privacy: .public)")
+                }
+            }
+
+            func processPermissionDeniedErrorLine(_ data: Data) {
+                guard let error = try? decoder.decode(ErrorMessage.self, from: data),
+                      error.error.message.localizedCaseInsensitiveContains("permission denied"),
+                      let item = error.item?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !item.isEmpty
+                else {
+                    return
+                }
+
+                let inserted = permissionDeniedItems.withLock { value in
+                    value.insert(item).inserted
+                }
+                if inserted {
+                    do {
+                        try "\(Self.logPadding)permission-denied item detected: \(item)\n".append(to: options.logURL, encoding: .utf8)
+                    } catch {
+                        TypeLogger.function().warning("Couldn't write permission-denied detection log: \(error.localizedDescription, privacy: .public)")
+                    }
                 }
             }
 
@@ -765,15 +787,7 @@ class ResticRunnerService: ResticRunnerProtocol {
                         resticScheduler.withLock { value in value?.backupDidFinishCopying() }
                     case "error":
                         logResticJSONLine(data)
-                        if let error = try? decoder.decode(ErrorMessage.self, from: data),
-                           error.error.message.localizedCaseInsensitiveContains("permission denied"),
-                           let item = error.item?.trimmingCharacters(in: .whitespacesAndNewlines),
-                           !item.isEmpty
-                        {
-                            permissionDeniedItems.withLock { value in
-                                _ = value.insert(item)
-                            }
-                        }
+                        processPermissionDeniedErrorLine(data)
                     case "verbose_status":
                         processVerboseStatusLine(data)
                     default:
@@ -813,6 +827,14 @@ class ResticRunnerService: ResticRunnerProtocol {
                 if let value {
                     standardErrorOutput += value
                 }
+                standardErrorBuffer.append(data)
+                while let lineEnd = standardErrorBuffer.firstIndex(of: UInt8(ascii: "\n")) {
+                    let line = standardErrorBuffer[..<lineEnd]
+                    standardErrorBuffer.removeSubrange(...lineEnd)
+                    if !line.isEmpty {
+                        processPermissionDeniedErrorLine(Data(line))
+                    }
+                }
                 do {
                     try value?
                         .prefixingLines(with: Self.logPadding)
@@ -834,6 +856,10 @@ class ResticRunnerService: ResticRunnerProtocol {
             if !standardOutputBuffer.isEmpty {
                 processStandardOutputLine(standardOutputBuffer)
                 standardOutputBuffer.removeAll()
+            }
+            if !standardErrorBuffer.isEmpty {
+                processPermissionDeniedErrorLine(standardErrorBuffer)
+                standardErrorBuffer.removeAll()
             }
             let deniedItems = permissionDeniedItems.withLock { $0.sorted() }
             if !deniedItems.isEmpty {
@@ -859,7 +885,7 @@ class ResticRunnerService: ResticRunnerProtocol {
                 } catch {
                     TypeLogger.function().warning("Couldn't write log: \(error.localizedDescription, privacy: .public)")
                 }
-                reply(nil)
+                reply(nil, deniedItems)
             } else {
                 let error = ProcessError.abnormalTermination(terminationStatus: process.terminationStatus, standardError: standardErrorOutput.trimmingCharacters(in: .whitespacesAndNewlines))
                 TypeLogger.function().error("\(error.localizedDescription, privacy: .public)")
@@ -872,7 +898,7 @@ class ResticRunnerService: ResticRunnerProtocol {
                 } catch {
                     TypeLogger.function().warning("Couldn't write log: \(error.localizedDescription, privacy: .public)")
                 }
-                reply(error)
+                reply(error, deniedItems)
             }
         } catch {
             TypeLogger.function().error("\(error.localizedDescription, privacy: .public)")
@@ -882,7 +908,7 @@ class ResticRunnerService: ResticRunnerProtocol {
             } catch {
                 TypeLogger.function().warning("Couldn't write log: \(error.localizedDescription, privacy: .public)")
             }
-            reply(error)
+            reply(error, [])
         }
     }
 

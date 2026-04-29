@@ -203,7 +203,7 @@ public enum BackupError: CustomNSError, LocalizedError, _ObjectiveCBridgeableErr
     func version(binary: String?, reply: @escaping (String?, Error?) -> Void)
     func repositoryStats(binary: String?, repository: String, environment: [String: String], logURL: URL, reply: @escaping (RepositoryStats?, Error?) -> Void)
     func forgetPrune(binary: String?, repository: String, environment: [String: String], logURL: URL, reply: @escaping (Error?) -> Void)
-    func backup(binary: String?, options: BackupOptions, reply: @escaping (Error?) -> Void)
+    func backup(binary: String?, options: BackupOptions, reply: @escaping (Error?, [String]) -> Void)
     func stop(reply: @escaping (Error?) -> Void)
     func includesBuiltIn(reply: @escaping (Bool) -> Void)
 }

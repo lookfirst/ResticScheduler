@@ -50,8 +50,6 @@ extension FormatStyle where Self == RFC3164FormatStyle {
     static var rfc3164: RFC3164FormatStyle { RFC3164FormatStyle() }
 }
 
-extension Process: @unchecked Sendable {}
-
 extension Array where Element == String {
     func appendingUnique(_ values: [String]) -> [String] {
         var result = self

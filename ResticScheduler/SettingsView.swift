@@ -15,12 +15,12 @@ struct SettingsView: View {
                 .tag(Tab.general)
             ResticSettingsView()
                 .tabItem {
-                    Label("Restic", systemImage: "umbrella")
+                    Label("Connection", systemImage: "umbrella")
                 }
                 .tag(Tab.restic)
             AdvancedSettingsView()
                 .tabItem {
-                    Label("Advanced", systemImage: "gearshape.2")
+                    Label("Configuration", systemImage: "gearshape.2")
                 }
                 .tag(Tab.advanced)
         }

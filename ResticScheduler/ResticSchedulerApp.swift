@@ -224,12 +224,12 @@ private struct ResticSchedulerMenu: View {
                 if lastSuccessfulBackupDate != nil {
                     Text("Latest Backup to “\(formatRepository(repository))”")
                     Text(lastSuccessfulBackup)
+                    Text("Last Prune")
+                    Text(lastPrune)
                     if let nextBackup {
                         Text("Next Backup")
                         Text(nextBackup)
                     }
-                    Text("Last Prune")
-                    Text(lastPrune)
                     if isS3Repository {
                         Divider()
                         Text("Repository Storage")
@@ -276,7 +276,7 @@ private struct ResticSchedulerMenu: View {
                 }
             }
             .disabled(resticScheduler.status == .stopping || resticScheduler.status == .pruning)
-            if resticScheduler.status != .pruning {
+            if resticScheduler.status == .idle {
                 Button("Prune Now") {
                     resticScheduler.runRepositoryPruneIfNeeded(reason: "manual request", ignoringRateLimit: true) { didStart in
                         if !didStart {
@@ -284,7 +284,6 @@ private struct ResticSchedulerMenu: View {
                         }
                     }
                 }
-                .disabled(resticScheduler.status != .idle)
             }
             Button("View Restic Logs…", action: showLogs)
             Divider()

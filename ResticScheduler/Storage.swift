@@ -29,6 +29,9 @@ extension UserDefaultValues {
     @UserDefaultEntry("ResticExcludes")
     var excludes: [String] = []
 
+    @UserDefaultEntry("PermissionDeniedBackupFailureRecords")
+    var permissionDeniedBackupFailureRecords: Data? = nil
+
     @UserDefaultEntry("IntelligentMacOSBackupEnabled")
     var intelligentMacOSBackupEnabled: Bool = false
 
@@ -37,6 +40,9 @@ extension UserDefaultValues {
 
     @UserDefaultEntry("LastSuccessfulPruneDate")
     var lastSuccessfulPruneDate: Date? = nil
+
+    @UserDefaultEntry("CachedRepositoryStats")
+    var cachedRepositoryStats: Data? = nil
 
     @UserDefaultEntry("NextScheduledBackupDate")
     var nextScheduledBackupDate: Date? = nil

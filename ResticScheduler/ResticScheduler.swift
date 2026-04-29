@@ -1,4 +1,5 @@
 import Combine
+import AppKit
 import os
 import ResticSchedulerKit
 import SwiftUI
@@ -7,6 +8,11 @@ import UserNotifications
 class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
     enum Status {
         case idle, preparation, backup, finishing, pruning, stopping
+    }
+
+    private struct PermissionDeniedBackupFailureRecord: Codable {
+        var count: Int
+        var updatedAt: Date
     }
 
     private class Runner: ResticRunnerProtocol {
@@ -63,6 +69,10 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
     private static let repositoryPruneCheckInterval: TimeInterval = 5 * 24 * 60 * 60
     private static let pruneInterval: TimeInterval = 7 * 24 * 60 * 60
     private static let backupDeferInterval: TimeInterval = 60 * 60
+    private static let permissionDeniedAutoExcludeThreshold = 5
+    private static let permissionDeniedAutoExcludeRetryInterval: TimeInterval = 7 * 24 * 60 * 60
+    private static let permissionDeniedBackupFailureRecordsDecoder = JSONDecoder()
+    private static let permissionDeniedBackupFailureRecordsEncoder = JSONEncoder()
     private static let intelligentMacOSGeneralExcludes = [
         ".build",
         ".cache",
@@ -530,11 +540,13 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
     @UserDefault(\.backupFrequency) private var backupFrequency
     @UserDefault(\.lastSuccessfulBackupDate) private var lastSuccessfulBackupDate
     @UserDefault(\.lastSuccessfulPruneDate) private var lastSuccessfulPruneDate
+    @UserDefault(\.cachedRepositoryStats) private var cachedRepositoryStatsData
     @UserDefault(\.nextScheduledBackupDate) private var nextScheduledBackupDate
     @UserDefault(\.binary) private var binary
     @UserDefault(\.arguments) private var arguments
     @UserDefault(\.includes) private var includes
     @UserDefault(\.excludes) private var excludes
+    @UserDefault(\.permissionDeniedBackupFailureRecords) private var permissionDeniedBackupFailureRecordsData
     @UserDefault(\.intelligentMacOSBackupEnabled) private var intelligentMacOSBackupEnabled
     @UserDefault(\.repository) private var repository
     @KeychainPassword(\.password) private var password
@@ -553,6 +565,7 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
     private var backupTimer: Timer?
     private var staleBackupScheduler: NSBackgroundActivityScheduler?
     private var repositoryPruneScheduler: NSBackgroundActivityScheduler?
+    private var currentBackupPermissionDeniedItems = Set<String>()
     private var bag = Set<AnyCancellable>()
 
     private var smartBackupHomeDirectories: [String] {
@@ -568,15 +581,38 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
     }
 
     private func effectiveExcludes(homeDirectories: [String]) -> [String] {
+        let baseExcludes = excludes.appendingUnique(automaticallyExcludedPermissionDeniedItems)
         guard intelligentMacOSBackupEnabled else {
-            return excludes
+            return baseExcludes
         }
 
-        var effectiveExcludes = excludes.appendingUnique(Self.intelligentMacOSGeneralExcludes)
+        var effectiveExcludes = baseExcludes.appendingUnique(Self.intelligentMacOSGeneralExcludes)
         for homeDirectory in homeDirectories {
             effectiveExcludes = effectiveExcludes.appendingUnique(Self.intelligentMacOSHomeExcludes(for: homeDirectory))
         }
         return effectiveExcludes
+    }
+
+    private var permissionDeniedBackupFailureRecords: [String: PermissionDeniedBackupFailureRecord] {
+        get {
+            guard let permissionDeniedBackupFailureRecordsData,
+                  let records = try? Self.permissionDeniedBackupFailureRecordsDecoder.decode([String: PermissionDeniedBackupFailureRecord].self, from: permissionDeniedBackupFailureRecordsData)
+            else {
+                return [:]
+            }
+
+            return records
+        }
+        set {
+            permissionDeniedBackupFailureRecordsData = try? Self.permissionDeniedBackupFailureRecordsEncoder.encode(newValue)
+        }
+    }
+
+    private var automaticallyExcludedPermissionDeniedItems: [String] {
+        permissionDeniedBackupFailureRecords
+            .filter { _, record in record.count >= Self.permissionDeniedAutoExcludeThreshold }
+            .map(\.key)
+            .sorted()
     }
 
     private var isBackupStale: Bool {
@@ -619,13 +655,36 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
     init() {
         AppDelegate.resticScheduler = self
         runner.scheduler = self
+        removeLegacyPermissionDeniedTrackingStorage()
         rescheduleBackup()
         rescheduleStaleBackupCheck()
         rescheduleRepositoryPruneCheck()
-        refreshRepositoryStats()
+        if repository.hasPrefix(RepositoryType.s3.rawValue) {
+            repositoryStats = cachedRepositoryStats
+            if repositoryStats == nil {
+                refreshRepositoryStats()
+            }
+        } else {
+            cachedRepositoryStats = nil
+        }
         NotificationCenter.default.publisher(for: .NSCalendarDayChanged)
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in self?.objectWillChange.send() }
+            .sink { [weak self] _ in
+                self?.objectWillChange.send()
+                self?.reconcileBackupSchedule(reason: "calendar day changed")
+            }
+            .store(in: &bag)
+        NotificationCenter.default.publisher(for: .NSSystemClockDidChange)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.reconcileBackupSchedule(reason: "system clock changed") }
+            .store(in: &bag)
+        NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.reconcileBackupSchedule(reason: "application became active") }
+            .store(in: &bag)
+        NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didWakeNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in self?.reconcileBackupSchedule(reason: "system wake") }
             .store(in: &bag)
     }
 
@@ -665,6 +724,21 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
         }
     }
 
+    func backupDidEncounterPermissionDeniedItems(_ items: [String]) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else {
+                return
+            }
+
+            let normalizedItems = items
+                .map(Self.normalizedPermissionDeniedPath)
+                .filter { !$0.isEmpty }
+            self.lock.withLock {
+                self.currentBackupPermissionDeniedItems.formUnion(normalizedItems)
+            }
+        }
+    }
+
     func backup(completion: @escaping ((Error?) -> Void)) {
         var options: BackupOptions?
         let binary = self.binary
@@ -682,6 +756,7 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
             filesDone = 0
             totalFiles = 0
             errorCount = 0
+            currentBackupPermissionDeniedItems.removeAll()
             let startedContent = UNMutableNotificationContent()
             startedContent.title = "Backup Started"
             startedContent.body = "Restic Scheduler started backing up “\(formatRepository(repository))”."
@@ -736,6 +811,7 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
                 let repository = self.repository
                 var localizedError: String?
                 var shouldRefreshRepositoryStats = false
+                var permissionDeniedItems = Set<String>()
                 self.lock.withLock {
                     if let error {
                         localizedError = error.localizedDescription
@@ -752,6 +828,11 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
                     }
                     self.status = .idle
                     shouldRefreshRepositoryStats = error == nil
+                    permissionDeniedItems = self.currentBackupPermissionDeniedItems
+                    self.currentBackupPermissionDeniedItems.removeAll()
+                }
+                if error == nil {
+                    self.updatePermissionDeniedExcludes(afterBackupPermissionDeniedItems: permissionDeniedItems)
                 }
 
                 if let localizedError {
@@ -818,6 +899,7 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
         guard repository.hasPrefix(RepositoryType.s3.rawValue) else {
             appendLogLine("Repository stats refresh skipped: repository is not S3")
             repositoryStats = nil
+            cachedRepositoryStats = nil
             repositoryStatsError = nil
             isUpdatingRepositoryStats = false
             pendingRepositoryStatsRefresh = false
@@ -833,6 +915,7 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
         pendingRepositoryStatsRefresh = false
         if reset {
             repositoryStats = nil
+            cachedRepositoryStats = nil
         }
         isUpdatingRepositoryStats = true
         repositoryStatsError = nil
@@ -847,6 +930,7 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
                 self.pendingRepositoryStatsRefresh = false
                 if let stats {
                     self.repositoryStats = stats
+                    self.cachedRepositoryStats = stats
                     self.repositoryStatsError = nil
                     self.appendLogLine("Repository stats refresh finished: \(stats.fileCount) blobs, \(stats.snapshotCount) snapshots, \(stats.totalBytes) bytes")
                 } else {
@@ -858,6 +942,125 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
                     self.refreshRepositoryStats()
                 }
             }
+        }
+    }
+
+    func resetPermissionDeniedFailureTracking() {
+        if !permissionDeniedBackupFailureRecords.isEmpty {
+            appendLogLine("Cleared permission-denied backup failure tracking after backup settings changed")
+        }
+        permissionDeniedBackupFailureRecords = [:]
+        currentBackupPermissionDeniedItems.removeAll()
+    }
+
+    private func updatePermissionDeniedExcludes(afterBackupPermissionDeniedItems permissionDeniedItems: Set<String>) {
+        let now = Date()
+        let deniedItems = permissionDeniedItems
+            .filter { !excludes.contains($0) }
+
+        var records = permissionDeniedBackupFailureRecords
+        for (path, record) in records where record.count < Self.permissionDeniedAutoExcludeThreshold && !deniedItems.contains(path) {
+            records.removeValue(forKey: path)
+            appendLogLine("Removed permission-denied backup failure tracking after a completed backup without the error: \(path) (previous count: \(record.count))")
+        }
+
+        var newAutomaticExcludes = [String]()
+        for path in deniedItems {
+            let previousCount = records[path]?.count ?? 0
+            let count = min(previousCount + 1, Self.permissionDeniedAutoExcludeThreshold)
+            records[path] = PermissionDeniedBackupFailureRecord(count: count, updatedAt: now)
+            if previousCount == 0 {
+                appendLogLine("Started permission-denied backup failure tracking: \(path) (count: \(count)/\(Self.permissionDeniedAutoExcludeThreshold))")
+            } else if count != previousCount {
+                appendLogLine("Updated permission-denied backup failure tracking: \(path) (count: \(previousCount) -> \(count)/\(Self.permissionDeniedAutoExcludeThreshold))")
+            } else {
+                appendLogLine("Refreshed permission-denied automatic exclude tracking: \(path) (count: \(count)/\(Self.permissionDeniedAutoExcludeThreshold))")
+            }
+            if previousCount < Self.permissionDeniedAutoExcludeThreshold, count >= Self.permissionDeniedAutoExcludeThreshold {
+                newAutomaticExcludes.append(path)
+            }
+        }
+
+        if !newAutomaticExcludes.isEmpty {
+            for path in newAutomaticExcludes.sorted() {
+                appendLogLine("Automatically excluding permission-denied path after \(Self.permissionDeniedAutoExcludeThreshold) consecutive backup failures: \(path)")
+            }
+        }
+
+        permissionDeniedBackupFailureRecords = records
+        agePermissionDeniedAutoExcludesIfNeeded()
+    }
+
+    private func agePermissionDeniedAutoExcludesIfNeeded() {
+        let records = permissionDeniedBackupFailureRecords
+        let now = Date()
+
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let pathsToRetry = records.compactMap { path, record -> String? in
+                guard record.count >= Self.permissionDeniedAutoExcludeThreshold,
+                      now.timeIntervalSince(record.updatedAt) >= Self.permissionDeniedAutoExcludeRetryInterval
+                else {
+                    return nil
+                }
+
+                return path
+            }
+
+            guard !pathsToRetry.isEmpty else {
+                return
+            }
+
+            DispatchQueue.main.async {
+                guard let self else {
+                    return
+                }
+
+                let retryDate = Date()
+                var currentRecords = self.permissionDeniedBackupFailureRecords
+                var agedPaths = [String]()
+                for path in pathsToRetry {
+                    if let currentRecord = currentRecords[path],
+                       currentRecord.count >= Self.permissionDeniedAutoExcludeThreshold,
+                       retryDate.timeIntervalSince(currentRecord.updatedAt) >= Self.permissionDeniedAutoExcludeRetryInterval
+                    {
+                        currentRecords[path] = PermissionDeniedBackupFailureRecord(count: Self.permissionDeniedAutoExcludeThreshold - 1, updatedAt: retryDate)
+                        agedPaths.append(path)
+                    }
+                }
+
+                guard !agedPaths.isEmpty else {
+                    return
+                }
+
+                self.permissionDeniedBackupFailureRecords = currentRecords
+                for path in agedPaths.sorted() {
+                    self.appendLogLine("Updated permission-denied backup failure tracking for retry after one week: \(path) (count: \(Self.permissionDeniedAutoExcludeThreshold) -> \(Self.permissionDeniedAutoExcludeThreshold - 1)/\(Self.permissionDeniedAutoExcludeThreshold))")
+                }
+            }
+        }
+    }
+
+    private func removeLegacyPermissionDeniedTrackingStorage() {
+        UserDefaults.standard.removeObject(forKey: "PermissionDeniedBackupFailures")
+        UserDefaults.standard.removeObject(forKey: "AutomaticallyExcludedPermissionDeniedItems")
+    }
+
+    private static func normalizedPermissionDeniedPath(_ path: String) -> String {
+        (path.trimmingCharacters(in: .whitespacesAndNewlines) as NSString)
+            .standardizingPath
+            .deletingTrailingSlashes
+    }
+
+    private var cachedRepositoryStats: RepositoryStats? {
+        get {
+            guard let cachedRepositoryStatsData else {
+                return nil
+            }
+
+            return try? NSKeyedUnarchiver.unarchivedObject(ofClass: RepositoryStats.self, from: cachedRepositoryStatsData)
+        }
+        set {
+            cachedRepositoryStatsData = newValue.flatMap { try? NSKeyedArchiver.archivedData(withRootObject: $0, requiringSecureCoding: true) }
         }
     }
 
@@ -972,10 +1175,13 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
             if nextScheduledBackupDate == nil || nextScheduledBackupDate! <= Date() {
                 nextScheduledBackupDate = nextBackupDate(from: Date())
             }
+            guard let nextScheduledBackupDate else {
+                return
+            }
             let timer = Timer(timeInterval: intervalSeconds, repeats: false) { [weak self] _ in
                 self?.scheduledBackup()
             }
-            timer.fireDate = nextScheduledBackupDate!
+            timer.fireDate = max(nextScheduledBackupDate, Date())
             backupTimer = timer
             DispatchQueue.main.async {
                 guard timer.isValid else {
@@ -1048,6 +1254,41 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
         }
     }
 
+    private func reconcileBackupSchedule(reason: String) {
+        var shouldReschedule = false
+        lock.withLock {
+            let interval = Duration.seconds(backupFrequency)
+            guard interval.components.seconds > 0 else {
+                return
+            }
+
+            guard let scheduledDate = nextScheduledBackupDate else {
+                nextScheduledBackupDate = nextBackupDate(from: Date())
+                shouldReschedule = true
+                return
+            }
+            guard scheduledDate <= Date() else {
+                return
+            }
+
+            switch status {
+            case .idle:
+                nextScheduledBackupDate = nextBackupDate(from: Date())
+                appendLogLine("Scheduled backup was overdue after \(reason); waiting until next scheduled backup: \(nextScheduledBackupDate?.formatted(.rfc3164) ?? "none"). Original next backup: \(scheduledDate.formatted(.rfc3164))")
+                shouldReschedule = true
+            case .pruning:
+                deferNextBackupByOneHour()
+                shouldReschedule = true
+            default:
+                appendLogLine("Scheduled backup overdue after \(reason), but scheduler is busy. Original next backup: \(scheduledDate.formatted(.rfc3164))")
+            }
+        }
+
+        if shouldReschedule {
+            rescheduleBackup()
+        }
+    }
+
     private func deferNextBackupByOneHour() {
         let baseDate = nextScheduledBackupDate ?? Date()
         nextScheduledBackupDate = baseDate.addingTimeInterval(Self.backupDeferInterval)
@@ -1111,16 +1352,10 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
 
                 DispatchQueue.main.async {
                     self.lock.withLock {
-                        if self.nextScheduledBackupDate == nil || self.nextScheduledBackupDate! <= Date() {
-                            self.nextScheduledBackupDate = self.nextBackupDate(from: Date())
-                        }
+                        self.nextScheduledBackupDate = self.nextBackupDate(from: Date())
                     }
+                    self.appendLogLine("Backup is stale; waiting until next scheduled backup")
                     self.rescheduleBackup()
-                    if let nextScheduledBackupDate = self.nextScheduledBackupDate {
-                        TypeLogger.function().info("Backup is stale; scheduled next backup for \(nextScheduledBackupDate, privacy: .public)")
-                    } else {
-                        TypeLogger.function().info("Backup is stale, but backups are disabled")
-                    }
                     completion(.finished)
                 }
             }

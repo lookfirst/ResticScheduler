@@ -47,6 +47,15 @@ class ResticRunnerService: ResticRunnerProtocol {
         let totalDuration: TimeInterval
     }
 
+    private struct ErrorMessage: Decodable {
+        struct ResticError: Decodable {
+            let message: String
+        }
+
+        let error: ResticError
+        let item: String?
+    }
+
     private struct RepositoryStatsMessage: Decodable {
         enum CodingKeys: String, CodingKey {
             case totalSize = "total_size"
@@ -57,6 +66,19 @@ class ResticRunnerService: ResticRunnerProtocol {
         let totalSize: UInt64
         let totalBlobCount: UInt64
         let snapshotsCount: UInt64
+    }
+
+    private struct VerboseStatusMessage: Decodable {
+        enum CodingKeys: String, CodingKey {
+            case action, item
+            case dataSize = "data_size"
+            case dataSizeInRepo = "data_size_in_repo"
+        }
+
+        let action: String
+        let item: String?
+        let dataSize: UInt64?
+        let dataSizeInRepo: UInt64?
     }
 
     private enum HookType: String, CustomStringConvertible {
@@ -85,6 +107,7 @@ class ResticRunnerService: ResticRunnerProtocol {
     ]
     private static let appleBackupExclusionQuery = "com_apple_backup_excludeItem = 'com.apple.backupd'"
     private static let repositoryStatsTimeout: TimeInterval = 15 * 60
+    private static let largeChangedFileLogThresholdBytes: UInt64 = 100 * 1024 * 1024
 
     private let connection: NSXPCConnection
 
@@ -660,6 +683,7 @@ class ResticRunnerService: ResticRunnerProtocol {
             try excludes.joined(separator: "\n").write(to: excludesURL, atomically: true, encoding: .utf8)
             process.arguments = [
                 "--json",
+                "--verbose=2",
                 "--cache-dir", cacheURL.path(percentEncoded: false), "--cleanup-cache",
                 "backup",
             ] + options.arguments + [
@@ -675,8 +699,10 @@ class ResticRunnerService: ResticRunnerProtocol {
             var activeDuration: TimeInterval?
             var standardOutputBuffer = Data()
             var didLogJSONStreamStart = false
+            let permissionDeniedItems = OSAllocatedUnfairLock<Set<String>>(initialState: [])
             let decoder = JSONDecoder()
-            func processStandardOutputLine(_ data: Data) {
+
+            func logResticJSONLine(_ data: Data) {
                 do {
                     if !didLogJSONStreamStart {
                         try "\(Self.logPadding)restic JSON stream started\n".append(to: options.logURL, encoding: .utf8)
@@ -687,9 +713,34 @@ class ResticRunnerService: ResticRunnerProtocol {
                 } catch {
                     TypeLogger.function().warning("Couldn't write restic JSON log: \(error.localizedDescription, privacy: .public)")
                 }
+            }
+
+            func processVerboseStatusLine(_ data: Data) {
+                guard let status = try? decoder.decode(VerboseStatusMessage.self, from: data),
+                      status.action == "new" || status.action == "modified",
+                      let item = status.item?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !item.isEmpty,
+                      let dataSize = status.dataSize,
+                      dataSize >= Self.largeChangedFileLogThresholdBytes
+                else {
+                    return
+                }
+
+                let action = status.action == "new" ? "new" : "changed"
+                let size = dataSize.formatted(.byteCount(style: .file))
+                let repoSize = status.dataSizeInRepo.map { ", repo delta \($0.formatted(.byteCount(style: .file)))" } ?? ""
+                do {
+                    try "\(Self.logPadding)large \(action) file: \(size)\(repoSize): \(item)\n".append(to: options.logURL, encoding: .utf8)
+                } catch {
+                    TypeLogger.function().warning("Couldn't write large changed file log: \(error.localizedDescription, privacy: .public)")
+                }
+            }
+
+            func processStandardOutputLine(_ data: Data) {
                 if let message = try? decoder.decode(Message.self, from: data) {
                     switch message.messageType {
                     case "status":
+                        logResticJSONLine(data)
                         if let status = try? decoder.decode(StatusMessage.self, from: data) {
                             resticScheduler.withLock {
                                 value in value?.progressDidUpdate(
@@ -708,13 +759,29 @@ class ResticRunnerService: ResticRunnerProtocol {
                             TypeLogger.function().warning("Invalid status message: \(value ?? "<no value>", privacy: .public)")
                         }
                     case "summary":
+                        logResticJSONLine(data)
                         summary = String(data: data, encoding: .utf8)
                         activeDuration = (try? decoder.decode(SummaryMessage.self, from: data))?.totalDuration
                         resticScheduler.withLock { value in value?.backupDidFinishCopying() }
+                    case "error":
+                        logResticJSONLine(data)
+                        if let error = try? decoder.decode(ErrorMessage.self, from: data),
+                           error.error.message.localizedCaseInsensitiveContains("permission denied"),
+                           let item = error.item?.trimmingCharacters(in: .whitespacesAndNewlines),
+                           !item.isEmpty
+                        {
+                            permissionDeniedItems.withLock { value in
+                                _ = value.insert(item)
+                            }
+                        }
+                    case "verbose_status":
+                        processVerboseStatusLine(data)
                     default:
+                        logResticJSONLine(data)
                         break
                     }
                 } else {
+                    logResticJSONLine(data)
                     let value = String(data: data, encoding: .utf8)
                     TypeLogger.function().warning("Unexpected message: \(value ?? "<no value>", privacy: .public)")
                 }
@@ -767,6 +834,10 @@ class ResticRunnerService: ResticRunnerProtocol {
             if !standardOutputBuffer.isEmpty {
                 processStandardOutputLine(standardOutputBuffer)
                 standardOutputBuffer.removeAll()
+            }
+            let deniedItems = permissionDeniedItems.withLock { $0.sorted() }
+            if !deniedItems.isEmpty {
+                resticScheduler.withLock { value in value?.backupDidEncounterPermissionDeniedItems(deniedItems) }
             }
             if process.terminationStatus == 0 || process.terminationStatus == 3 {
                 if summary != nil {

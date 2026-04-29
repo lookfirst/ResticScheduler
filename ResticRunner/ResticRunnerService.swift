@@ -725,15 +725,8 @@ class ResticRunnerService: ResticRunnerProtocol {
                     return
                 }
 
-                let inserted = permissionDeniedItems.withLock { value in
-                    value.insert(item).inserted
-                }
-                if inserted {
-                    do {
-                        try "\(Self.logPadding)permission-denied item detected: \(item)\n".append(to: options.logURL, encoding: .utf8)
-                    } catch {
-                        TypeLogger.function().warning("Couldn't write permission-denied detection log: \(error.localizedDescription, privacy: .public)")
-                    }
+                permissionDeniedItems.withLock { value in
+                    _ = value.insert(item)
                 }
             }
 

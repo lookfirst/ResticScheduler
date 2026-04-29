@@ -959,6 +959,7 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
             let previousCount = records[path]?.count ?? 0
             let count = min(previousCount + 1, Self.permissionDeniedAutoExcludeThreshold)
             records[path] = PermissionDeniedBackupFailureRecord(count: count, updatedAt: now)
+            appendLogLine("Permission-denied item tracking count: \(path) (seen \(count)/\(Self.permissionDeniedAutoExcludeThreshold) consecutive backup\(count == 1 ? "" : "s"))")
             if previousCount == 0 {
                 startedRecordsCount += 1
                 appendLogLine("Started permission-denied backup failure tracking: \(path) (count: \(count)/\(Self.permissionDeniedAutoExcludeThreshold))")

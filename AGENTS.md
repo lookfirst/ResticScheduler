@@ -57,6 +57,33 @@ Notes:
 - Restart from `/Applications/Restic Scheduler.app`, not the DerivedData app.
 - If the app was not running, the quit command may be harmless; continue with copy and open.
 
+## Git Commits
+
+When the user asks to add and commit changes, split the work into individual commits based on the intent of each change. Do not collapse unrelated UI, scheduler, runner, storage, configuration, and documentation changes into one commit just because they were made in the same session.
+
+Use conventional commit messages:
+
+```text
+type(scope): summary
+```
+
+Examples:
+
+```text
+fix(runner): parse permission errors from stderr
+feat(storage): cache repository stats between launches
+docs(agents): document release install workflow
+```
+
+Guidelines:
+
+- Commit all current changes across as many focused commits as needed, not just the most obvious files.
+- Prefer several small coherent commits over a few broad commits when the diff contains multiple behaviors or concerns.
+- Use `git diff --stat`, `git diff`, and `git status --short` to confirm all changed files are accounted for.
+- Stage hunks or files deliberately so each commit can stand on its own.
+- After committing, verify the worktree is clean with `git status --short`.
+- Do not leave unrelated modified files uncommitted after an explicit add/commit request unless the user asked to preserve them separately.
+
 ## Validation
 
 - For UI-only SwiftUI menu changes, a successful release build is enough unless the user asks for runtime verification.

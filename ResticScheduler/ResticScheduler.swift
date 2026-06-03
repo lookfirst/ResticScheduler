@@ -1314,7 +1314,7 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
 
         guard let scheduledDate = nextScheduledBackupDate else {
             nextScheduledBackupDate = nextBackupDate(from: Date())
-            shouldReschedule = true
+            rescheduleBackup()
             return
         }
         guard scheduledDate <= Date() else {
@@ -1323,9 +1323,10 @@ class ResticScheduler: ObservableObject, ResticSchedulerProtocol {
 
         switch status {
         case .idle:
-            nextScheduledBackupDate = nextBackupDate(from: Date())
-            appendLogLine("Scheduled backup was overdue after \(reason); waiting until next scheduled backup: \(nextScheduledBackupDate?.formatted(.rfc3164) ?? "none"). Original next backup: \(scheduledDate.formatted(.rfc3164))")
-            shouldReschedule = true
+            backupTimer?.invalidate()
+            backupTimer = nil
+            appendLogLine("Scheduled backup was overdue after \(reason); starting now. Original next backup: \(scheduledDate.formatted(.rfc3164))")
+            scheduledBackup()
         case .pruning:
             deferNextBackupByOneHour()
             shouldReschedule = true
